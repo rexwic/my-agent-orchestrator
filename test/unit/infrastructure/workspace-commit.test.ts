@@ -38,7 +38,7 @@ describe('WorkspaceManager.commitAll (real git)', { timeout: 90_000 }, () => {
     git(repo, 'add', '-A');
     git(repo, 'commit', '-qm', 'init');
     manager = new WorkspaceManager(repo, path.join(repo, '.orchestry'), new ProcessManager());
-  });
+  }, 60_000); // six git processes — slow on a loaded Windows machine
 
   afterEach(async () => {
     await fs.rm(repo, { recursive: true, force: true, maxRetries: 5 });

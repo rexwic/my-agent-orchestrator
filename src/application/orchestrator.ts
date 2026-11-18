@@ -16,6 +16,7 @@ import { type RunEvent, createTokenUsage } from '../domain/run.js';
 import {
   isDispatchable,
   isBlocked,
+  findDependencyCycles,
   isTerminal,
   resolveCompletionStatus,
   resolveFailureStatus,
@@ -40,6 +41,8 @@ import type { RunService } from './run-service.js';
 import { ReviewRunner } from './review-runner.js';
 import { ReviewGate } from './review-gate.js';
 import { QuotaService } from './quota-service.js';
+import { Semaphore } from './semaphore.js';
+import type { RoleService } from './role-service.js';
 import { MemoryQuotaStore } from '../infrastructure/storage/quota-store.js';
 import type { IQuotaStore } from '../infrastructure/storage/interfaces.js';
 import type { QuotaState } from '../domain/quota.js';
@@ -71,6 +74,8 @@ export interface OrchestratorDeps {
   shellRunner?: IShellRunner;
   /** Usage-limit pauses (.orchestry/quota.json). Defaults to in-memory. */
   quotaStore?: IQuotaStore;
+  /** Roles → agent instances; synced at the start of every tick. */
+  roleService?: RoleService;
   config: OrchestratorConfig;
   projectRoot: string;
   lockPath: string;
@@ -119,6 +124,10 @@ export class Orchestrator {
   private readonly reviewGate: ReviewGate;
   private readonly shellRunner: IShellRunner;
   private readonly quota: QuotaService;
+  /** Limits concurrent review_criteria runs (review.max_parallel). */
+  private readonly reviewSlots: Semaphore;
+  /** Problems already reported (invalid role files, dependency cycles) — report each once. */
+  private readonly reportedProblems = new Set<string>();
 
   constructor(private readonly deps: OrchestratorDeps) {
     this.reviewGate = new ReviewGate({
@@ -129,6 +138,7 @@ export class Orchestrator {
     });
     this.shellRunner = deps.shellRunner ?? new ShellRunner(deps.processManager);
     this.quota = new QuotaService(deps.quotaStore ?? new MemoryQuotaStore(), deps.eventBus);
+    this.reviewSlots = new Semaphore(Math.max(1, Math.floor(deps.config.review?.max_parallel ?? 1)));
     this.cachedTaskStore = new CachedTaskStore(deps.taskStore);
     this.cachedAgentStore = new CachedAgentStore(deps.agentStore);
     this.cachedGoalStore = deps.goalStore ? new CachedGoalStore(deps.goalStore) : null;
@@ -491,6 +501,7 @@ export class Orchestrator {
         this.cachedGoalStore?.invalidate();
 
         await this.loadState();
+        await this.syncRoles();
         await this.reconcile();
         if (!this.skipAutonomousSeeding) {
           await this.seedAutonomousTasks();
@@ -801,9 +812,23 @@ export class Orchestrator {
       })
       .slice(0, availableSlots);
 
-    // Scope overlap check — pre-compute index of in-progress scopes, then check candidates
+    // Dependency cycles never unblock — report them once instead of waiting silently.
+    const openTasks = allTasks.filter((t) => !isTerminal(t.status));
+    for (const cycle of findDependencyCycles(openTasks)) {
+      const key = `cycle:${[...cycle].sort().join(',')}`;
+      if (this.reportedProblems.has(key)) continue;
+      this.reportOnce(key, {
+        error: `Dependency cycle: ${[...cycle, cycle[0]].join(' → ')} — these tasks can never start. Fix depends_on.`,
+        context: 'dependency check',
+      });
+      this.deps.eventBus.emit({ type: 'task:dependency_cycle', taskIds: cycle });
+    }
+
+    // Scope overlap check — pre-compute index of held scopes, then check candidates.
+    // A scope is held while the task runs AND while it waits in review: its changes
+    // are not merged yet, so another agent editing the same files would conflict.
     const blockedIds = new Set<string>();
-    const inProgressScoped = allTasks.filter((t) => t.status === 'in_progress' && t.scope?.length);
+    const inProgressScoped = allTasks.filter((t) => (t.status === 'in_progress' || t.status === 'review') && t.scope?.length);
     const scopeIndex = new ScopeIndex(inProgressScoped.map((t) => t.scope));
     for (const candidate of candidates) {
       if (!candidate.scope?.length) continue;
@@ -919,6 +944,32 @@ export class Orchestrator {
       due_at: new Date(Date.now() + delay).toISOString(),
       error,
     });
+  }
+
+  /** Make agent instances match .orchestry/roles/*.yml (create, reconfigure, remove idle surplus). */
+  private async syncRoles(): Promise<void> {
+    if (!this.deps.roleService) return;
+    try {
+      const result = await this.deps.roleService.sync();
+      for (const { file, message } of result.errors) {
+        this.reportOnce(`role:${file}:${message}`, { error: message, context: `role file ${file} ignored` });
+      }
+      if (result.created.length || result.updated.length || result.removed.length) {
+        this.cachedAgentStore.invalidate();
+      }
+    } catch (err) {
+      this.reportOnce(`role-sync:${err instanceof Error ? err.message : String(err)}`, {
+        error: err instanceof Error ? err.message : String(err),
+        context: 'role sync',
+      });
+    }
+  }
+
+  /** Emit a non-fatal orchestrator error once per key (avoids repeating it every tick). */
+  private reportOnce(key: string, payload: { error: string; context: string }): void {
+    if (this.reportedProblems.has(key)) return;
+    this.reportedProblems.add(key);
+    this.deps.eventBus.emit({ type: 'orchestrator:error', ...payload, fatal: false });
   }
 
   /** IDs and names of agents whose quota group is paused (an assignee may be either). */
@@ -1138,6 +1189,12 @@ export class Orchestrator {
         attempt,
         prompt,
         workspacePath,
+        executed: {
+          adapter: agent.adapter,
+          ...(agent.config.model ? { model: agent.config.model } : {}),
+          ...(agent.config.effort ? { effort: agent.config.effort } : {}),
+          ...(agent.role_id ? { role: agent.role_id } : {}),
+        },
       });
 
       // Reset terminal states before transitioning to in_progress
@@ -1441,7 +1498,26 @@ export class Orchestrator {
     resultText?: string,
     filesChanged?: string[],
   ): Promise<void> {
-    return this.withStateLock(() => this._handleRunSuccess(taskId, runId, agentId, tokens, resultText, filesChanged));
+    const pending = await this.withStateLock(() => this._handleRunSuccess(taskId, runId, agentId, tokens, resultText, filesChanged));
+    if (!pending) return;
+
+    // Review criteria (e.g. a 5-minute mvn test) run OUTSIDE the state lock so ticks,
+    // dispatch and other completions continue meanwhile; review.max_parallel caps them.
+    const passed = await this.reviewSlots.run(() => this.runAutoReview(taskId, pending.criteria, pending.cwd))
+      .catch((err: unknown) => {
+        this.deps.eventBus.emit({
+          type: 'orchestrator:error',
+          error: err instanceof Error ? err.message : String(err),
+          context: `auto-review of task ${taskId}`,
+          fatal: false,
+        });
+        return false;
+      });
+    const wasSingleTaskRun = this.singleTaskRunIds.delete(taskId);
+    if (!passed || this.shuttingDown) return;
+    await this.withStateLock(() => this.approveReviewed(taskId));
+    // Approval may unblock dependents.
+    if (!wasSingleTaskRun) this.scheduleImmediateDispatch();
   }
 
   private async _handleRunSuccess(
@@ -1451,7 +1527,7 @@ export class Orchestrator {
     tokens?: import('../domain/run.js').TokenUsage,
     resultText?: string,
     filesChanged?: string[],
-  ): Promise<void> {
+  ): Promise<{ criteria: import('../domain/task.js').ReviewCriterion[]; cwd: string } | undefined> {
     await this.flushStateLazy();
     this.abortControllers.delete(taskId);
     const state = this.state!;
@@ -1587,11 +1663,14 @@ export class Orchestrator {
     // keeps it in review regardless of approval_policy (no force-approve). Without
     // criteria, an auto policy approves immediately; otherwise a human approves.
     // Approval merges the worktree branch; dependents unblock only once it is done.
+    // Criteria run after the lock is released (see handleRunSuccess).
+    let pendingReview: { criteria: import('../domain/task.js').ReviewCriterion[]; cwd: string } | undefined;
     if (newStatus === 'review') {
-      const approved = task.review_criteria?.length
-        ? await this.runAutoReview(taskId, task.review_criteria, task.workspace ?? this.deps.projectRoot)
-        : autoApprove;
-      if (approved) await this.approveReviewed(taskId);
+      if (task.review_criteria?.length) {
+        pendingReview = { criteria: task.review_criteria, cwd: task.workspace ?? this.deps.projectRoot };
+      } else if (autoApprove) {
+        await this.approveReviewed(taskId);
+      }
     }
 
     await this.saveState();
@@ -1600,7 +1679,11 @@ export class Orchestrator {
     if (!wasSingleTaskRun) {
       // Reactive dispatch — agent is idle, try to assign next task immediately
       this.scheduleImmediateDispatch();
+    } else if (pendingReview) {
+      // Keep tracking it so the post-review approval skips the reactive dispatch too.
+      this.singleTaskRunIds.add(taskId);
     }
+    return pendingReview;
   }
 
   private async handleRunFailure(

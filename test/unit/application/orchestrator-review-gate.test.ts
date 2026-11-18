@@ -83,7 +83,7 @@ async function setup(opts: SetupOptions = {}) {
 
   const orch = new Orchestrator(deps);
   await (orch as any).loadState();
-  const finish = () => (orch as any)._handleRunSuccess(taskId, runId, agentId, undefined, 'summary', []);
+  const finish = () => (orch as any).handleRunSuccess(taskId, runId, agentId, undefined, 'summary', []);
 
   return { finish, taskStore, workspaceManager, shellRunner, calls, events, taskId };
 }

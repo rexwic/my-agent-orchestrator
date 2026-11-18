@@ -19,6 +19,7 @@ export class RunService {
     attempt: number;
     prompt: string;
     workspacePath: string;
+    executed?: import('../domain/run.js').ExecutedConfig;
   }): Promise<Run> {
     const run: Run = {
       id: `run_${nanoid(7)}`,
@@ -29,6 +30,7 @@ export class RunService {
       started_at: new Date().toISOString(),
       workspace_path: params.workspacePath,
       prompt: params.prompt,
+      ...(params.executed ? { executed: params.executed } : {}),
     };
 
     await this.runStore.save(run);

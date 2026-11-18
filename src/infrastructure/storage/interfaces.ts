@@ -48,6 +48,21 @@ export interface IStateStore {
   write(state: OrchestratorState): Promise<void>;
 }
 
+export interface RoleLoadResult {
+  roles: import('../../domain/role.js').Role[];
+  /** Role files that failed validation (not loaded). */
+  errors: Array<{ file: string; message: string }>;
+}
+
+export interface IRoleStore {
+  save(role: import('../../domain/role.js').Role): Promise<void>;
+  get(name: string): Promise<import('../../domain/role.js').Role | null>;
+  /** All valid roles plus validation errors for the invalid files. */
+  load(): Promise<RoleLoadResult>;
+  list(): Promise<import('../../domain/role.js').Role[]>;
+  delete(name: string): Promise<void>;
+}
+
 export interface IQuotaStore {
   read(): Promise<import('../../domain/quota.js').QuotaState>;
   write(state: import('../../domain/quota.js').QuotaState): Promise<void>;

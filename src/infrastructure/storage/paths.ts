@@ -94,6 +94,14 @@ export class Paths {
     return path.join(this.attachmentsDir, sanitizeId(taskId));
   }
 
+  get rolesDir(): string {
+    return path.join(this.root, 'roles');
+  }
+
+  rolePath(name: string): string {
+    return path.join(this.rolesDir, `${sanitizeId(name)}.yml`);
+  }
+
   teamPath(id: string): string {
     return path.join(this.teamsDir, `${sanitizeId(id)}.yml`);
   }

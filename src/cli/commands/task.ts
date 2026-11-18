@@ -37,7 +37,8 @@ export function registerTaskCommand(program: Command, container: LightContainer)
     .option('--depends-on <ids>', 'Comma-separated dependency task IDs')
     .option('--max-attempts <n>', 'Max retry attempts')
     .option('--workspace-mode <mode>', 'Workspace mode: shared|worktree|isolated')
-    .option('--assignee <agent-id>', 'Assign to agent')
+    .option('--role <role>', 'Role that should do it — any idle instance of the role may take it')
+    .option('--assignee <agent-id>', 'Assign to a specific agent')
     .option('--review-criteria <criteria>', 'Comma-separated auto-review criteria: test_pass,typecheck,lint')
     .option('--scope <patterns>', 'Comma-separated glob patterns for file scope (e.g. src/auth/**,src/session/**)')
     .option('--goal-id <goalId>', 'Associate task with a goal')
@@ -62,6 +63,7 @@ export function registerTaskCommand(program: Command, container: LightContainer)
         depends_on: opts.dependsOn?.split(',').map((s: string) => s.trim()),
         max_attempts: opts.maxAttempts ? parseInt(opts.maxAttempts, 10) : undefined,
         workspace_mode: opts.workspaceMode,
+        role: opts.role,
         assignee: opts.assignee,
         review_criteria: opts.reviewCriteria?.split(',').map((s: string) => s.trim()),
         scope: opts.scope?.split(',').map((s: string) => s.trim()),
@@ -148,6 +150,7 @@ export function registerTaskCommand(program: Command, container: LightContainer)
         ['Status', `${statusIcon(t.status)} ${t.status} · attempt ${t.attempts}/${t.max_attempts}`],
         ['Priority', priorityLabel(t.priority)],
       ];
+      if (t.role) pairs.push(['Role', t.role]);
       if (t.assignee) pairs.push(['Agent', agentName(t.assignee)]);
       if (t.labels.length) pairs.push(['Labels', t.labels.join(', ')]);
       if (t.scope?.length) pairs.push(['Scope', t.scope.join(', ')]);

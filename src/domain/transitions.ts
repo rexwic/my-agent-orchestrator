@@ -81,6 +81,38 @@ export function isBlocked(task: Task, allTasks: Task[] | Map<string, Task>): boo
 }
 
 /**
+ * Find dependency cycles among tasks (A → B → A). Tasks in a cycle can never
+ * become unblocked, so the orchestrator reports them instead of waiting forever.
+ * Returns each cycle once, as the list of task IDs along it.
+ * Missing dependencies are ignored (see isBlocked).
+ */
+export function findDependencyCycles(tasks: Task[]): string[][] {
+  const byId = new Map(tasks.map((t) => [t.id, t]));
+  const state = new Map<string, 'visiting' | 'done'>();
+  const cycles: string[][] = [];
+  const seen = new Set<string>();
+
+  const visit = (id: string, path: string[]): void => {
+    const mark = state.get(id);
+    if (mark === 'done') return;
+    if (mark === 'visiting') {
+      const cycle = path.slice(path.indexOf(id));
+      const key = [...cycle].sort().join(',');
+      if (!seen.has(key)) { seen.add(key); cycles.push(cycle); }
+      return;
+    }
+    state.set(id, 'visiting');
+    for (const dep of byId.get(id)?.depends_on ?? []) {
+      if (byId.has(dep)) visit(dep, [...path, id]);
+    }
+    state.set(id, 'done');
+  };
+
+  for (const t of tasks) visit(t.id, []);
+  return cycles;
+}
+
+/**
  * Determine the next status after a task failure (run error or shutdown).
  * Returns 'retrying' if attempts remain, 'failed' otherwise.
  */

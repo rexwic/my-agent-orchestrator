@@ -99,6 +99,12 @@ export class AgentService {
 
   async update(id: string, fields: { name?: string; adapter?: string; role?: string; command?: string; model?: string; effort?: Agent['config']['effort'] | ''; approval_policy?: Agent['config']['approval_policy'] }): Promise<Agent> {
     const agent = await this.get(id);
+    if (agent.role_id) {
+      throw new InvalidArgumentsError(
+        `Agent "${agent.name}" is an instance of role "${agent.role_id}" and takes its settings from the role. ` +
+        `Edit .orchestry/roles/${agent.role_id}.yml instead.`,
+      );
+    }
     const wasShell = agent.adapter === 'shell';
 
     const adapter = fields.adapter !== undefined ? fields.adapter.trim() : agent.adapter;
@@ -194,7 +200,10 @@ export class AgentService {
   ): Promise<Agent | null> {
     const agents = await this.agentStore.list();
     const available = agents.filter(
-      (a) => a.status === 'idle' && (opts?.isAvailable?.(a) ?? true),
+      (a) => a.status === 'idle' &&
+        (opts?.isAvailable?.(a) ?? true) &&
+        // Role — hard constraint: only instances of that role may take the task.
+        (!task.role || a.role_id === task.role),
     );
 
     if (available.length === 0) return null;

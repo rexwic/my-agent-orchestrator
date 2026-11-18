@@ -43,6 +43,8 @@ export interface Task {
   description: string;
   status: TaskStatus;
   priority: number;
+  /** Role that should do this task — any idle instance of it may take it. */
+  role?: string;
   assignee?: string;
   labels: string[];
   depends_on: string[];
@@ -65,6 +67,7 @@ export interface CreateTaskInput {
   title: string;
   description?: string;
   priority?: number;
+  role?: string;
   assignee?: string;
   labels?: string[];
   depends_on?: string[];

@@ -48,7 +48,10 @@ export interface Agent {
   id: string;
   name: string;
   adapter: string;
+  /** Free-text role description (used in prompts). */
   role?: string;
+  /** Role this agent is an instance of (.orchestry/roles/<role_id>.yml). Config is managed by the role. */
+  role_id?: string;
   config: AgentConfig;
   status: AgentStatus;
   current_task?: string;

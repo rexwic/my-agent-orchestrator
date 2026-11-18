@@ -26,6 +26,15 @@ export interface Run {
   pid?: number;
   error?: string;
   tokens?: TokenUsage;
+  /** What actually ran (vs. the role/agent config, which may change later). */
+  executed?: ExecutedConfig;
+}
+
+export interface ExecutedConfig {
+  adapter: string;
+  model?: string;
+  effort?: string;
+  role?: string;
 }
 
 export interface TokenUsage {

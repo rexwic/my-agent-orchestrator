@@ -9,7 +9,7 @@
 
 import type { OrchestratorConfig } from './domain/config.js';
 import type { CliContext } from './cli/context.js';
-import type { ITaskStore, IAgentStore, IRunStore, IStateStore, IConfigStore, IContextStore, IMessageStore, IGoalStore, ITeamStore, IQuotaStore } from './infrastructure/storage/interfaces.js';
+import type { ITaskStore, IAgentStore, IRunStore, IStateStore, IConfigStore, IContextStore, IMessageStore, IGoalStore, ITeamStore, IQuotaStore, IRoleStore } from './infrastructure/storage/interfaces.js';
 import type { IWorkspaceManager } from './infrastructure/workspace/interface.js';
 import type { ITemplateEngine } from './infrastructure/template/template-engine.js';
 import type { IProcessManager } from './infrastructure/process/process-manager.js';
@@ -29,6 +29,7 @@ import { MessageStore } from './infrastructure/storage/message-store.js';
 import { GoalStore } from './infrastructure/storage/goal-store.js';
 import { TeamStore } from './infrastructure/storage/team-store.js';
 import { QuotaStore } from './infrastructure/storage/quota-store.js';
+import { RoleStore } from './infrastructure/storage/role-store.js';
 
 import { EventBus } from './application/event-bus.js';
 import { TaskService } from './application/task-service.js';
@@ -38,6 +39,7 @@ import { MessageService } from './application/message-service.js';
 import { GoalService } from './application/goal-service.js';
 import { TeamService } from './application/team-service.js';
 import { QuotaService } from './application/quota-service.js';
+import { RoleService } from './application/role-service.js';
 
 import type { Orchestrator } from './application/orchestrator.js';
 import type { DoctorService } from './application/doctor-service.js';
@@ -63,6 +65,7 @@ export interface LightContainer {
   goalStore: IGoalStore;
   teamStore: ITeamStore;
   quotaStore: IQuotaStore;
+  roleStore: IRoleStore;
 
   // Application — services only
   eventBus: EventBus;
@@ -74,6 +77,8 @@ export interface LightContainer {
   teamService: TeamService;
   /** Usage-limit pauses per account (quota group). */
   quotaService: QuotaService;
+  /** Roles (.orchestry/roles/*.yml) and their agent instances. */
+  roleService: RoleService;
 }
 
 /** Full container — everything from light + orchestrator, adapters, workspace, template. */
@@ -115,16 +120,18 @@ export async function buildLightContainer(context: CliContext): Promise<LightCon
   const goalStore = new GoalStore(paths);
   const teamStore = new TeamStore(paths);
   const quotaStore = new QuotaStore(paths);
+  const roleStore = new RoleStore(paths);
 
   // Application — services
   const eventBus = new EventBus();
-  const taskService = new TaskService(taskStore, eventBus, config, paths, agentStore);
+  const taskService = new TaskService(taskStore, eventBus, config, paths, agentStore, roleStore);
   const agentService = new AgentService(agentStore, stateStore, eventBus, config);
   const runService = new RunService(runStore, eventBus);
   const messageService = new MessageService(messageStore, agentStore, teamStore, eventBus);
   const goalService = new GoalService(goalStore, eventBus, agentService, taskService, contextStore);
   const teamService = new TeamService(teamStore, agentStore, taskStore, eventBus);
   const quotaService = new QuotaService(quotaStore, eventBus);
+  const roleService = new RoleService(roleStore, agentStore, eventBus, config);
 
   return {
     context,
@@ -142,6 +149,7 @@ export async function buildLightContainer(context: CliContext): Promise<LightCon
     goalStore,
     teamStore,
     quotaStore,
+    roleStore,
     eventBus,
     taskService,
     agentService,
@@ -150,6 +158,7 @@ export async function buildLightContainer(context: CliContext): Promise<LightCon
     goalService,
     teamService,
     quotaService,
+    roleService,
   };
 }
 
@@ -240,6 +249,7 @@ export async function buildFullContainer(context: CliContext): Promise<Container
     goalStore: light.goalStore,
     skillLoader,
     quotaStore: light.quotaStore,
+    roleService: light.roleService,
     config: light.config,
     projectRoot: context.projectRoot,
     lockPath: light.paths.lockPath,

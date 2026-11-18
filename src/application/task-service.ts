@@ -15,7 +15,7 @@ import {
   InvalidTransitionError,
   InvalidArgumentsError,
 } from '../domain/errors.js';
-import type { ITaskStore, IAgentStore } from '../infrastructure/storage/interfaces.js';
+import type { ITaskStore, IAgentStore, IRoleStore } from '../infrastructure/storage/interfaces.js';
 import type { Paths } from '../infrastructure/storage/paths.js';
 import type { OrchestratorConfig } from '../domain/config.js';
 import type { EventBus } from './event-bus.js';
@@ -28,6 +28,7 @@ export class TaskService {
     private readonly config: OrchestratorConfig,
     private readonly paths?: Paths,
     private readonly agentStore?: IAgentStore,
+    private readonly roleStore?: IRoleStore,
   ) {}
 
   async create(input: CreateTaskInput): Promise<Task> {
@@ -35,7 +36,17 @@ export class TaskService {
       throw new InvalidArgumentsError('Task title is required');
     }
 
-    const priority = input.priority ?? this.config.defaults.task.priority;
+    // Role: must exist; its task_defaults fill what the input leaves unset.
+    const roleName = input.role?.trim() || undefined;
+    let roleDefaults: import('../domain/role.js').RoleTaskDefaults | undefined;
+    if (roleName) {
+      if (!this.roleStore) throw new InvalidArgumentsError('Roles are not available in this context');
+      const role = await this.roleStore.get(roleName);
+      if (!role) throw new InvalidArgumentsError(`Unknown role "${roleName}". List roles with: orch role list`);
+      roleDefaults = role.task_defaults;
+    }
+
+    const priority = input.priority ?? roleDefaults?.priority ?? this.config.defaults.task.priority;
     if (!Number.isInteger(priority) || priority < 1 || priority > 4) {
       throw new InvalidArgumentsError('Priority must be an integer between 1 and 4');
     }
@@ -61,15 +72,16 @@ export class TaskService {
       description: input.description?.trim() ?? '',
       status: 'todo',
       priority,
+      ...(roleName ? { role: roleName } : {}),
       assignee,
       labels: input.labels ?? [],
       depends_on: input.depends_on ?? [],
       created_at: now,
       updated_at: now,
       attempts: 0,
-      max_attempts: input.max_attempts ?? this.config.defaults.task.max_attempts,
+      max_attempts: input.max_attempts ?? roleDefaults?.max_attempts ?? this.config.defaults.task.max_attempts,
       workspace_mode: input.workspace_mode,
-      review_criteria: input.review_criteria,
+      review_criteria: input.review_criteria ?? roleDefaults?.review_criteria,
       scope: input.scope,
       goalId: input.goalId,
     };

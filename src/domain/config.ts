@@ -47,6 +47,11 @@ export type PlatformCommand =
 export interface ReviewConfig {
   /** Per-criterion timeout. */
   timeout_ms: number;
+  /**
+   * How many tasks may run their review commands at the same time (default 1).
+   * Parallel `mvn test` runs compete for CPU, fixed ports, test databases and ~/.m2.
+   */
+  max_parallel?: number;
   /** Overrides for the built-in criterion commands (npm test / npx tsc --noEmit / npm run lint). */
   commands: Partial<Record<ReviewCriterion, PlatformCommand>>;
 }
@@ -93,6 +98,7 @@ export const DEFAULT_CONFIG: OrchestratorConfig = {
   },
   review: {
     timeout_ms: 600_000,
+    max_parallel: 1,
     commands: {},
   },
 };

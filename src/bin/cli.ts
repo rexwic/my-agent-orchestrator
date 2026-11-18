@@ -26,6 +26,7 @@ const LIGHT_COMMANDS: Record<string, (program: Command, container: LightContaine
   msg:     async (p, c) => { const m = await import('../cli/commands/msg.js');     m.registerMsgCommand(p, c); },
   goal:    async (p, c) => { const m = await import('../cli/commands/goal.js');    m.registerGoalCommand(p, c); },
   team:    async (p, c) => { const m = await import('../cli/commands/team.js');    m.registerTeamCommand(p, c); },
+  role:    async (p, c) => { const m = await import('../cli/commands/role.js');    m.registerRoleCommand(p, c); },
   org:     async (p, c) => { const m = await import('../cli/commands/org.js');     m.registerOrgCommand(p, c); },
 };
 
@@ -64,6 +65,7 @@ const COMMAND_STUBS: Array<[name: string, description: string]> = [
   ['msg',     'Inter-agent messaging'],
   ['goal',    'Manage goals'],
   ['team',    'Manage teams'],
+  ['role',    'Manage roles (model/effort per role, N agents each)'],
   ['org',     'Pre-built AI companies'],
   ['run',     'Run tasks'],
   ['doctor',  'Check adapters and dependencies'],

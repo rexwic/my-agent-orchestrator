@@ -129,7 +129,7 @@ describe('autoApprove + review_criteria interaction', () => {
       criteriaPass: true,
     });
 
-    await (orch as any)._handleRunSuccess(taskId, runId, agentId, undefined, 'result text', []);
+    await (orch as any).handleRunSuccess(taskId, runId, agentId, undefined, 'result text', []);
 
     const task = await taskStore.get(taskId);
     expect(task!.status).toBe('done');
@@ -141,7 +141,7 @@ describe('autoApprove + review_criteria interaction', () => {
       criteriaPass: false,
     });
 
-    await (orch as any)._handleRunSuccess(taskId, runId, agentId, undefined, 'result text', []);
+    await (orch as any).handleRunSuccess(taskId, runId, agentId, undefined, 'result text', []);
 
     const task = await taskStore.get(taskId);
     expect(task!.status).toBe('review');
@@ -153,7 +153,7 @@ describe('autoApprove + review_criteria interaction', () => {
       criteriaPass: false,
     });
 
-    await (orch as any)._handleRunSuccess(taskId, runId, agentId, undefined, 'result text', []);
+    await (orch as any).handleRunSuccess(taskId, runId, agentId, undefined, 'result text', []);
 
     expect(emittedEvents).toContainEqual(expect.objectContaining({ type: 'task:auto_reviewed', taskId, passed: false }));
     expect(emittedEvents.some((e) => e.type === 'task:status_changed' && e.to === 'done')).toBe(false);
@@ -165,7 +165,7 @@ describe('autoApprove + review_criteria interaction', () => {
       criteriaPass: true,
     });
 
-    await (orch as any)._handleRunSuccess(taskId, runId, agentId, undefined, 'result text', []);
+    await (orch as any).handleRunSuccess(taskId, runId, agentId, undefined, 'result text', []);
 
     const task = await taskStore.get(taskId);
     expect(task!.status).toBe('done');
@@ -178,7 +178,7 @@ describe('autoApprove + review_criteria interaction', () => {
       criteriaPass: true,
     });
 
-    await (orch as any)._handleRunSuccess(taskId, runId, agentId, undefined, 'result text', []);
+    await (orch as any).handleRunSuccess(taskId, runId, agentId, undefined, 'result text', []);
 
     const task = await taskStore.get(taskId);
     expect(task!.status).toBe('review');
@@ -190,7 +190,7 @@ describe('autoApprove + review_criteria interaction', () => {
       criteriaPass: false,
     });
 
-    await (orch as any)._handleRunSuccess(taskId, runId, agentId, undefined, 'result text', []);
+    await (orch as any).handleRunSuccess(taskId, runId, agentId, undefined, 'result text', []);
 
     const task = await taskStore.get(taskId);
     expect(task!.status).toBe('review');
@@ -202,7 +202,7 @@ describe('autoApprove + review_criteria interaction', () => {
       criteriaPass: false,
     });
 
-    await (orch as any)._handleRunSuccess(taskId, runId, agentId, undefined, 'result text', []);
+    await (orch as any).handleRunSuccess(taskId, runId, agentId, undefined, 'result text', []);
 
     const task = await taskStore.get(taskId);
     expect(task!.review_results).toBeDefined();
@@ -217,7 +217,7 @@ describe('autoApprove + review_criteria interaction', () => {
       criteriaPass: true, // irrelevant — no criteria to run
     });
 
-    await (orch as any)._handleRunSuccess(taskId, runId, agentId, undefined, 'result text', []);
+    await (orch as any).handleRunSuccess(taskId, runId, agentId, undefined, 'result text', []);
 
     const task = await taskStore.get(taskId);
     expect(task!.status).toBe('done');
