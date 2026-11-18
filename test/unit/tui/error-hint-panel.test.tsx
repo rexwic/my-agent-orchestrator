@@ -11,7 +11,7 @@ import { App } from '../../../src/tui/App.js';
 import type { Agent } from '../../../src/domain/agent.js';
 import type { OrchestratorState } from '../../../src/domain/state.js';
 import { DEFAULT_STATE } from '../../../src/domain/state.js';
-import { AdapterErrorKind } from '../../../src/domain/errors.js';
+import { AdapterErrorKind, ERROR_HINTS } from '../../../src/domain/errors.js';
 
 const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -163,8 +163,7 @@ describe('AgentDetailPanel — ErrorHintPanel', () => {
       },
     });
     const output = await openDetailPanel(agent);
-    // ERROR_HINTS[RATE_LIMIT].message = 'API rate limit reached.'
-    expect(output).toContain('API rate limit reached.');
+    expect(output).toContain(ERROR_HINTS[AdapterErrorKind.RATE_LIMIT].message);
   });
 
   it('shows hint.fix for known error kind', async () => {
@@ -179,8 +178,8 @@ describe('AgentDetailPanel — ErrorHintPanel', () => {
       },
     });
     const output = await openDetailPanel(agent);
-    // ERROR_HINTS[RATE_LIMIT].fix = 'Wait and retry with: orch task retry <id>'
-    expect(output).toContain('orch task retry');
+    // ERROR_HINTS[RATE_LIMIT].fix points at the manual resume command
+    expect(output).toContain('orch agent resume');
   });
 
   it('shows doctorHint text when kind has doctorHint=true (ADAPTER_NOT_FOUND)', async () => {

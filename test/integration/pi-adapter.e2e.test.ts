@@ -262,7 +262,7 @@ describe('Pi adapter — end-to-end through Orchestrator', () => {
     cleanupOrch(orch);
   });
 
-  it('keeps a rate-limited Pi task out of done and records the run as failed', async () => {
+  it('keeps a rate-limited Pi task out of done, requeues it and pauses the account', async () => {
     const proc = createMockProcess();
     const killWithGrace = vi.fn(async (_pid: number, _timeoutMs?: number) => {
       setImmediate(() => proc.emit('close', 0));
@@ -324,13 +324,16 @@ describe('Pi adapter — end-to-end through Orchestrator', () => {
     }) + '\n');
     proc.stdout.write(JSON.stringify({ type: 'agent_settled' }) + '\n');
 
+    // A usage limit is not the task's fault: it is requeued (attempt refunded) instead of
+    // failing, and the account is paused until the limit resets.
     const finalTask = await waitFor(async () => {
       const current = await taskStore.get(task.id);
-      return current?.status === 'failed' ? current : null;
+      return current?.status === 'retrying' ? current : null;
     });
 
-    expect(finalTask.status).toBe('failed');
-    expect(transitions).toEqual(['todo→in_progress', 'in_progress→failed']);
+    expect(finalTask.status).toBe('retrying');
+    expect(finalTask.attempts).toBe(0);
+    expect(transitions).toEqual(['todo→in_progress', 'in_progress→retrying']);
     expect(transitions.some((transition) => transition.endsWith('→done'))).toBe(false);
 
     const finalAgent = await agentStore.get(agent.id);
@@ -338,11 +341,11 @@ describe('Pi adapter — end-to-end through Orchestrator', () => {
       status: 'idle',
       stats: {
         tasks_completed: 0,
-        tasks_failed: 1,
+        tasks_failed: 0,
         total_runs: 1,
       },
       last_error: {
-        message,
+        message: expect.stringContaining(message),
         kind: AdapterErrorKind.RATE_LIMIT,
       },
     });

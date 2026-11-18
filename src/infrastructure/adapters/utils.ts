@@ -10,7 +10,15 @@ import type { Readable } from 'node:stream';
 import type { AgentEvent } from './interface.js';
 import { readLines } from '../process/process-manager.js';
 import { type TokenUsage, createTokenUsage } from '../../domain/run.js';
-import { classifyAdapterError } from '../../domain/errors.js';
+import { classifyAdapterError, AdapterErrorKind } from '../../domain/errors.js';
+import { parseResetTime } from '../../domain/quota.js';
+
+/** `{ resetAt }` for a usage-limit failure whose message names a reset time. */
+export function resetAtFor(kind: AdapterErrorKind, message: string): { resetAt?: string } {
+  if (kind !== AdapterErrorKind.RATE_LIMIT) return {};
+  const resetAt = parseResetTime(message)?.toISOString();
+  return resetAt ? { resetAt } : {};
+}
 
 const STDERR_TAIL_BYTES = 4096;
 
@@ -146,7 +154,7 @@ export function createStreamingEvents(
       const spawnErr = exitError as Error;
       const message = appendStderrTail(spawnErr.message, adapterName, stderrTail());
       const classified = classifyAdapterError(message, exitCode ?? undefined);
-      throw Object.assign(new Error(message), { errorKind: classified });
+      throw Object.assign(new Error(message), { errorKind: classified, ...resetAtFor(classified, message) });
     }
     if (exitCode !== 0 && exitCode !== null && !signal?.aborted && !gotDoneEvent) {
       const msg = appendStderrTail(
@@ -155,7 +163,7 @@ export function createStreamingEvents(
         stderrTail(),
       );
       const classified = classifyAdapterError(msg, exitCode);
-      throw Object.assign(new Error(msg), { errorKind: classified });
+      throw Object.assign(new Error(msg), { errorKind: classified, ...resetAtFor(classified, msg) });
     }
   }
 

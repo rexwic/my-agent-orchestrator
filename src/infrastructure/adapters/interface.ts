@@ -60,6 +60,14 @@ export interface AgentEvent {
   data: unknown;
   tokens?: { input: number; output: number; reasoning?: number; total: number; cache_read?: number; cache_write?: number };
   errorKind?: AdapterErrorKind;
+  /**
+   * `error` only: the run has failed, even if the process later exits with code 0
+   * (e.g. Claude's `result` with `is_error: true`). Non-fatal errors (reconnect
+   * notices, warnings) leave the outcome to the process exit code.
+   */
+  fatal?: boolean;
+  /** `error` with errorKind RATE_LIMIT: when the provider says the limit resets (ISO). */
+  resetAt?: string;
 }
 
 export interface ExecuteHandle {

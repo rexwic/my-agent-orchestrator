@@ -23,6 +23,11 @@ export interface AgentConfig {
   system_prompt?: string;
   workspace_mode?: WorkspaceMode;
   skills?: string[];
+  /**
+   * Quota group override. Agents in the same group share a usage limit and are
+   * paused together. Default: derived from the adapter and its login / API key.
+   */
+  quota_group?: string;
 }
 
 export interface AgentStats {

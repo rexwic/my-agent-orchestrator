@@ -185,19 +185,25 @@ export class AgentService {
    * - Idle status bonus = 20
    * - Success rate bonus = 0–10 (scaled by completed / total)
    */
-  async findBestAgent(task: Task): Promise<Agent | null> {
+  async findBestAgent(
+    task: Task,
+    opts?: {
+      /** Extra availability check, e.g. "not paused by a usage limit". */
+      isAvailable?: (agent: Agent) => boolean;
+    },
+  ): Promise<Agent | null> {
     const agents = await this.agentStore.list();
     const available = agents.filter(
-      (a) => a.status === 'idle',
+      (a) => a.status === 'idle' && (opts?.isAvailable?.(a) ?? true),
     );
 
     if (available.length === 0) return null;
 
     // Explicit assignee — hard constraint (match by ID or name)
     if (task.assignee) {
-      const assigned = agents.find((a) => a.id === task.assignee || a.name === task.assignee);
-      if (assigned && assigned.status === 'idle') return assigned;
-      return null;
+      // Hard constraint: if the assignee is busy or unavailable (paused), the task waits.
+      const assigned = available.find((a) => a.id === task.assignee || a.name === task.assignee);
+      return assigned ?? null;
     }
 
     // Pre-compute lowercase task labels once

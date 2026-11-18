@@ -331,6 +331,28 @@ describe('AgentService', () => {
       expect(result).toBeNull();
     });
 
+    it('skips agents rejected by isAvailable (e.g. paused by a usage limit)', async () => {
+      agentStore = createMockAgentStore([
+        makeAgent({ id: 'agt_paused', status: 'idle', stats: { tasks_completed: 10, tasks_failed: 0, total_runs: 10, total_runtime_ms: 0 } }),
+        makeAgent({ id: 'agt_ok', status: 'idle' }),
+      ]);
+      service = new AgentService(agentStore, stateStore, eventBus, DEFAULT_CONFIG);
+
+      const result = await service.findBestAgent(makeTask(), { isAvailable: (a) => a.id !== 'agt_paused' });
+      expect(result?.id).toBe('agt_ok');
+    });
+
+    it('returns null when the assignee is unavailable, without falling back to another agent', async () => {
+      agentStore = createMockAgentStore([
+        makeAgent({ id: 'agt_1', status: 'idle' }),
+        makeAgent({ id: 'agt_2', status: 'idle' }),
+      ]);
+      service = new AgentService(agentStore, stateStore, eventBus, DEFAULT_CONFIG);
+
+      const result = await service.findBestAgent(makeTask({ assignee: 'agt_1' }), { isAvailable: (a) => a.id !== 'agt_1' });
+      expect(result).toBeNull();
+    });
+
     it('returns assigned agent if idle', async () => {
       const agent = makeAgent({ id: 'agt_1', status: 'idle' });
       agentStore = createMockAgentStore([agent]);

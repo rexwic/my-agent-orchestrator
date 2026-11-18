@@ -29,6 +29,11 @@ export class Paths {
     return path.join(this.root, 'state.json');
   }
 
+  /** Usage-limit pauses per quota group (shared with CLI `agent resume`). */
+  get quotaPath(): string {
+    return path.join(this.root, 'quota.json');
+  }
+
   get lockPath(): string {
     return path.join(this.root, 'orchestry.lock');
   }

@@ -48,6 +48,11 @@ export interface IStateStore {
   write(state: OrchestratorState): Promise<void>;
 }
 
+export interface IQuotaStore {
+  read(): Promise<import('../../domain/quota.js').QuotaState>;
+  write(state: import('../../domain/quota.js').QuotaState): Promise<void>;
+}
+
 export interface IConfigStore {
   read(): Promise<OrchestratorConfig>;
   write(config: OrchestratorConfig): Promise<void>;

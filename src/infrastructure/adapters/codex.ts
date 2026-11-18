@@ -10,11 +10,13 @@ import type { IAgentAdapter, AdapterTestResult, ExecuteParams, AgentEvent, Execu
 import type { IProcessManager } from '../process/process-manager.js';
 import { extractTokens, createStreamingEvents, buildFullPrompt } from './utils.js';
 import {
+  AdapterErrorKind,
   classifyAdapterError,
   extractErrorMessage,
   isModelMetadataWarning,
 } from '../../domain/errors.js';
 import { execCommand } from '../process/resolve-command.js';
+import { parseResetTime } from '../../domain/quota.js';
 
 
 export class CodexAdapter implements IAgentAdapter {
@@ -73,7 +75,7 @@ export class CodexAdapter implements IAgentAdapter {
   }
 }
 
-function createCodexEventParser(): (line: string) => AgentEvent | null {
+export function createCodexEventParser(): (line: string) => AgentEvent | null {
   let lastErrorMessage: string | null = null;
 
   return (line) => {
@@ -121,8 +123,10 @@ function parseCodexEvent(line: string): AgentEvent | null {
       }
 
       case 'turn.failed': {
+        // The turn is over — fatal regardless of the process exit code.
         const tokens = extractTokens(parsed);
-        return codexErrorEvent(timestamp, parsed, parsed.error ?? parsed, tokens);
+        const event = codexErrorEvent(timestamp, parsed, parsed.error ?? parsed, tokens);
+        return event.type === 'error' ? { ...event, fatal: true } : event;
       }
 
       case 'item.completed': {
@@ -202,12 +206,16 @@ function codexErrorEvent(
   if (isModelMetadataWarning(message)) {
     return { type: 'output', timestamp, data: { text: `⚠ ${message}`, raw } };
   }
+  const errorKind = classifyAdapterError(message);
+  // e.g. "You've hit your usage limit … try again in 2 hours 5 minutes." / "… try again at 3:04 PM."
+  const resetAt = errorKind === AdapterErrorKind.RATE_LIMIT ? parseResetTime(message)?.toISOString() : undefined;
   return {
     type: 'error',
     timestamp,
     data: { message, raw },
     ...(tokens ? { tokens } : {}),
-    errorKind: classifyAdapterError(message),
+    errorKind,
+    ...(resetAt ? { resetAt } : {}),
   };
 }
 

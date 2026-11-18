@@ -28,6 +28,10 @@ export { AgentService } from './application/agent-service.js';
 export { RunService } from './application/run-service.js';
 export { Orchestrator } from './application/orchestrator.js';
 export { ReviewGate } from './application/review-gate.js';
+export { QuotaService } from './application/quota-service.js';
+export { QuotaStore, MemoryQuotaStore } from './infrastructure/storage/quota-store.js';
+export type { QuotaPause, QuotaState } from './domain/quota.js';
+export { quotaGroupOf, describeQuotaGroup, parseResetTime, computePauseUntil } from './domain/quota.js';
 export type { ApproveResult } from './application/review-gate.js';
 export { ReviewRunner, DEFAULT_REVIEW_COMMANDS, resolveReviewCommand } from './application/review-runner.js';
 

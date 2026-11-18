@@ -21,7 +21,7 @@ import {
   resolveFailureStatus,
   calculateRetryDelay,
 } from '../domain/transitions.js';
-import { NoAgentsError, TaskAlreadyRunningError, LockConflictError, WorkspaceError, classifyAdapterError } from '../domain/errors.js';
+import { NoAgentsError, TaskAlreadyRunningError, LockConflictError, WorkspaceError, classifyAdapterError, extractErrorMessage, AdapterErrorKind } from '../domain/errors.js';
 import { scopesOverlap, ScopeIndex } from '../domain/scope.js';
 import { acquireLock, releaseLock, touchLock } from '../infrastructure/storage/lock.js';
 import type { ITaskStore, IAgentStore, IRunStore, IStateStore, IContextStore, IGoalStore } from '../infrastructure/storage/interfaces.js';
@@ -39,6 +39,10 @@ import type { AgentService } from './agent-service.js';
 import type { RunService } from './run-service.js';
 import { ReviewRunner } from './review-runner.js';
 import { ReviewGate } from './review-gate.js';
+import { QuotaService } from './quota-service.js';
+import { MemoryQuotaStore } from '../infrastructure/storage/quota-store.js';
+import type { IQuotaStore } from '../infrastructure/storage/interfaces.js';
+import type { QuotaState } from '../domain/quota.js';
 import { ShellRunner, type IShellRunner } from '../infrastructure/process/shell-runner.js';
 
 /** Max serialized event data written to JSONL (8 KB) */
@@ -65,6 +69,8 @@ export interface OrchestratorDeps {
   skillLoader?: ISkillLoader;
   /** Runs review_criteria commands. Defaults to a ShellRunner on processManager. */
   shellRunner?: IShellRunner;
+  /** Usage-limit pauses (.orchestry/quota.json). Defaults to in-memory. */
+  quotaStore?: IQuotaStore;
   config: OrchestratorConfig;
   projectRoot: string;
   lockPath: string;
@@ -112,6 +118,7 @@ export class Orchestrator {
 
   private readonly reviewGate: ReviewGate;
   private readonly shellRunner: IShellRunner;
+  private readonly quota: QuotaService;
 
   constructor(private readonly deps: OrchestratorDeps) {
     this.reviewGate = new ReviewGate({
@@ -121,6 +128,7 @@ export class Orchestrator {
       eventBus: deps.eventBus,
     });
     this.shellRunner = deps.shellRunner ?? new ShellRunner(deps.processManager);
+    this.quota = new QuotaService(deps.quotaStore ?? new MemoryQuotaStore(), deps.eventBus);
     this.cachedTaskStore = new CachedTaskStore(deps.taskStore);
     this.cachedAgentStore = new CachedAgentStore(deps.agentStore);
     this.cachedGoalStore = deps.goalStore ? new CachedGoalStore(deps.goalStore) : null;
@@ -767,13 +775,17 @@ export class Orchestrator {
 
     const allTasks = await this.cachedTaskStore.list();
     const taskMap = new Map(allTasks.map((t) => [t.id, t]));
+    // Tasks pinned to a usage-limit-paused agent wait without taking a slot,
+    // so work for other accounts/providers keeps flowing.
+    const pausedAgentIds = await this.pausedAgentIds();
     const candidates = allTasks
       .filter(
         (t) =>
           isDispatchable(t.status) &&
           !isBlocked(t, taskMap) &&
           !state.running[t.id] &&
-          !state.claimed.has(t.id),
+          !state.claimed.has(t.id) &&
+          !(t.assignee && pausedAgentIds.has(t.assignee)),
       )
       .sort((a, b) => {
         // 1. Priority: lower number = higher urgency (P1 before P4)
@@ -909,6 +921,20 @@ export class Orchestrator {
     });
   }
 
+  /** IDs and names of agents whose quota group is paused (an assignee may be either). */
+  private async pausedAgentIds(): Promise<Set<string>> {
+    const pauses: QuotaState = await this.quota.activePauses();
+    const ids = new Set<string>();
+    if (Object.keys(pauses).length === 0) return ids;
+    for (const agent of await this.cachedAgentStore.list()) {
+      if (this.quota.isPaused(agent, pauses)) {
+        ids.add(agent.id);
+        ids.add(agent.name);
+      }
+    }
+    return ids;
+  }
+
   /**
    * When a task permanently fails, cascade-fail all tasks that depend on it
    * (directly or transitively). Prevents dependent tasks from hanging as TODO forever.
@@ -1003,7 +1029,10 @@ export class Orchestrator {
     try {
       // Find agent
       const allAgents = await this.cachedAgentStore.list();
-      const agent = await this.deps.agentService.findBestAgent(task);
+      const pauses = await this.quota.activePauses();
+      const agent = await this.deps.agentService.findBestAgent(task, {
+        isAvailable: (a) => !this.quota.isPaused(a, pauses),
+      });
       if (!agent) {
         if (allAgents.length === 0) {
           throw new NoAgentsError();
@@ -1216,6 +1245,9 @@ export class Orchestrator {
     let resultText: string | undefined;
     let lastAgentMessage: string | undefined;
     let lastErrorKind: import('../domain/errors.js').AdapterErrorKind | undefined;
+    let lastResetAt: string | undefined;
+    /** First fatal error event — the run failed even if the process exits 0. */
+    let fatalError: { message: string; kind?: import('../domain/errors.js').AdapterErrorKind; resetAt?: string } | undefined;
     const filesChangedSet = new Set<string>();
 
     try {
@@ -1278,6 +1310,17 @@ export class Orchestrator {
                 filesChangedSet.add(toolCallFilePath);
               }
             }
+          }
+        }
+
+        if (event.type === 'error') {
+          if (event.resetAt) lastResetAt = event.resetAt;
+          if (event.fatal && !fatalError) {
+            fatalError = {
+              message: extractErrorMessage(event.data),
+              ...(event.errorKind ? { kind: event.errorKind } : {}),
+              ...(event.resetAt ? { resetAt: event.resetAt } : {}),
+            };
           }
         }
 
@@ -1354,19 +1397,31 @@ export class Orchestrator {
         }
       }
 
+      // A fatal error event (e.g. Claude result with is_error) fails the run even on exit code 0
+      if (fatalError && !this.shuttingDown) {
+        throw Object.assign(new Error(fatalError.message), {
+          ...(fatalError.kind ? { errorKind: fatalError.kind } : {}),
+          ...(fatalError.resetAt ? { resetAt: fatalError.resetAt } : {}),
+        });
+      }
+
       // Adapter finished successfully — runService.finish emits agent:completed
       // Use resultText from done event, or fall back to last agent message
       const finalResult = resultText ?? lastAgentMessage;
       await this.handleRunSuccess(taskId, runId, agentId, collectedTokens, finalResult, [...filesChangedSet]);
     } catch (err) {
-      const error = err instanceof Error ? err.message : String(err);
-      // Prefer errorKind from last error event; fall back to thrown error's errorKind (from utils.ts)
-      const errorKind = lastErrorKind
-        ?? (err instanceof Error ? (err as Error & { errorKind?: import('../domain/errors.js').AdapterErrorKind }).errorKind : undefined);
+      type AdapterFailure = Error & { errorKind?: import('../domain/errors.js').AdapterErrorKind; resetAt?: string };
+      // The fatal event's message is more specific than "process exited with code 1"
+      const error = fatalError?.message ?? (err instanceof Error ? err.message : String(err));
+      // Prefer the fatal event, then the last error event, then the thrown error (from utils.ts)
+      const errorKind = fatalError?.kind ?? lastErrorKind
+        ?? (err instanceof Error ? (err as AdapterFailure).errorKind : undefined);
+      const resetAt = fatalError?.resetAt ?? lastResetAt
+        ?? (err instanceof Error ? (err as AdapterFailure).resetAt : undefined);
       const entry = this.state?.running[taskId];
       if (entry) {
         // runService.finish emits agent:completed
-        await this.handleRunFailure(taskId, entry, error, errorKind);
+        await this.handleRunFailure(taskId, entry, error, errorKind, resetAt);
       } else {
         // Running entry was already cleaned up (e.g. by reconcile) — finalize the run
         // directly so it doesn't stay stuck in status: running forever.
@@ -1434,6 +1489,9 @@ export class Orchestrator {
     await this.deps.taskStore.save(task);
 
     const agent = await this.deps.agentStore.get(agentId);
+    if (agent) {
+      await this.quota.recordSuccess(agent).catch(() => {});
+    }
     const isAutonomousTask = task.labels?.includes(AUTONOMOUS_LABEL);
     const autoApprove = isAutonomousTask || agent?.config.approval_policy === 'auto';
 
@@ -1550,8 +1608,67 @@ export class Orchestrator {
     entry: RunningEntry,
     error: string,
     errorKind?: import('../domain/errors.js').AdapterErrorKind,
+    resetAt?: string,
   ): Promise<void> {
+    if (errorKind === AdapterErrorKind.RATE_LIMIT) {
+      return this.withStateLock(() => this._handleUsageLimit(taskId, entry, error, resetAt));
+    }
     return this.withStateLock(() => this._handleRunFailure(taskId, entry, error, errorKind));
+  }
+
+  /**
+   * A run hit its account's usage limit. Not the task's fault: pause the quota
+   * group until the reset time, refund the attempt, and put the task back in the
+   * queue with its worktree intact. Dependents are not failed. The task runs
+   * again once the group resumes (or on an agent with another account).
+   */
+  private async _handleUsageLimit(
+    taskId: string,
+    entry: RunningEntry,
+    error: string,
+    resetAt?: string,
+  ): Promise<void> {
+    await this.flushStateLazy();
+    this.abortControllers.delete(taskId);
+    const state = this.state!;
+    if (!state.running[taskId]) return;
+
+    const task = await this.deps.taskStore.get(taskId);
+    if (!task) return;
+
+    await this.deps.runService.finish(entry.run_id, 'failed', undefined, error);
+    await this.deps.agentService.setStatus(entry.agent_id, 'idle');
+
+    const agent = await this.deps.agentStore.get(entry.agent_id);
+    if (agent) {
+      const parsedReset = resetAt ? new Date(resetAt) : undefined;
+      const { pause } = await this.quota.recordLimitHit({
+        agent,
+        taskId,
+        message: error,
+        ...(parsedReset && !Number.isNaN(parsedReset.getTime()) ? { resetAt: parsedReset } : {}),
+      });
+      agent.current_task = undefined;
+      agent.last_error = {
+        message: `Usage limit — paused until ${pause.until}. ${pause.reason}`.slice(0, 500),
+        kind: AdapterErrorKind.RATE_LIMIT,
+        timestamp: new Date().toISOString(),
+      };
+      agent.stats.total_runs += 1;
+      agent.stats.total_runtime_ms += Date.now() - new Date(entry.started_at).getTime();
+      await this.deps.agentStore.save(agent);
+    }
+
+    // Refund the attempt and requeue (in_progress → retrying is dispatchable).
+    task.attempts = Math.max(0, task.attempts - 1);
+    task.updated_at = new Date().toISOString();
+    await this.deps.taskStore.save(task);
+    await this.deps.taskService.updateStatus(taskId, 'retrying');
+
+    delete state.running[taskId];
+    state.stats.total_runs++;
+    await this.saveState();
+    // No immediate re-dispatch: the group is paused; the next tick checks again.
   }
 
   private async _handleRunFailure(

@@ -1,11 +1,12 @@
 /**
  * `orch agent` command group.
  *
- * Subcommands: add, list, status, remove, disable, enable
+ * Subcommands: add, list, status, remove, disable, enable, resume
  */
 
 import type { Command } from 'commander';
 import type { LightContainer } from '../../container.js';
+import { describeQuotaGroup, type QuotaPause } from '../../domain/quota.js';
 import {
   statusIcon,
   printSuccess,
@@ -128,14 +129,18 @@ export function registerAgentCommand(program: Command, container: LightContainer
         return;
       }
 
+      const pauses = await container.quotaService.currentPauses();
       const headers = ['STATUS', 'AGENT', 'ADAPTER', 'TASK', 'TIME'];
-      const rows = agents.map((a) => [
-        `${statusIcon(a.status)} ${a.status}`,
-        agentName(a.name),
-        a.adapter,
-        a.current_task ?? dim('—'),
-        dim('—'),
-      ]);
+      const rows = agents.map((a) => {
+        const pause = pauses[container.quotaService.groupOf(a)];
+        return [
+          pause ? '⏸ paused' : `${statusIcon(a.status)} ${a.status}`,
+          agentName(a.name),
+          a.adapter,
+          a.current_task ?? dim('—'),
+          pause ? `until ${formatPauseUntil(pause)}` : dim('—'),
+        ];
+      });
 
       console.log();
       printTable(headers, rows);
@@ -173,6 +178,13 @@ export function registerAgentCommand(program: Command, container: LightContainer
       }
       if (a.current_task) pairs.push(['Task', a.current_task]);
       if (a.role) pairs.push(['Role', a.role]);
+      const group = container.quotaService.groupOf(a);
+      const pause = (await container.quotaService.currentPauses())[group];
+      pairs.push(['Quota', describeQuotaGroup(group)]);
+      if (pause) {
+        pairs.push(['Paused', `until ${formatPauseUntil(pause)}${pause.reset_known ? '' : ' (reset time unknown — will probe)'}`]);
+        pairs.push(['Reason', pause.reason || '—']);
+      }
       if (a.config.skills?.length) pairs.push(['Skills', a.config.skills.join(', ')]);
 
       printKeyValue(pairs);
@@ -248,6 +260,20 @@ export function registerAgentCommand(program: Command, container: LightContainer
       printSuccess(`Enabled agent ${id}`);
     });
 
+  // agent resume
+  agent
+    .command('resume <id-or-group>')
+    .description('Resume an agent paused by a usage limit (resumes every agent on the same account)')
+    .action(async (target: string) => {
+      const found = await container.agentService.get(target).catch(() => null);
+      const group = await container.quotaService.resume(found ?? target);
+      if (!group) {
+        console.log(`  ${dim('Not paused:')} ${found ? describeQuotaGroup(container.quotaService.groupOf(found)) : target}`);
+        return;
+      }
+      printSuccess(`Resumed ${describeQuotaGroup(group)} — its agents will be dispatched on the next tick`);
+    });
+
   // agent autonomous
   agent
     .command('autonomous <id>')
@@ -267,4 +293,11 @@ export function registerAgentCommand(program: Command, container: LightContainer
         printSuccess(`Autonomous mode ${enable ? 'enabled' : 'disabled'} for agent ${agentName(a.name)} (${a.id})`);
       }
     });
+}
+
+/** Local time a pause ends, with the date when it is not today. */
+function formatPauseUntil(pause: QuotaPause): string {
+  const until = new Date(pause.until);
+  const time = until.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  return until.toDateString() === new Date().toDateString() ? time : `${until.toLocaleDateString()} ${time}`;
 }

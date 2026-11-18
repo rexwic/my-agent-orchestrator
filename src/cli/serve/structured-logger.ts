@@ -131,6 +131,15 @@ export class StructuredLogger {
       case 'task:cascade_failed':
         return { ts, level: 'warn', event: event.type, taskId: event.taskId, failedDependencyId: event.failedDependencyId, reason: event.reason };
 
+      case 'quota:paused':
+        return {
+          ts, level: 'warn', event: event.type, group: event.group, agentId: event.agentId, taskId: event.taskId,
+          until: event.until, resetKnown: event.resetKnown, reason: event.reason,
+        };
+
+      case 'quota:resumed':
+        return { ts, level: 'info', event: event.type, group: event.group, manual: event.manual };
+
       default:
         return null;
     }

@@ -20,6 +20,8 @@ export type OrchestratorEvent =
   | { type: 'agent:file_changed'; runId: string; agentId: string; path: string }
   | { type: 'agent:completed'; runId: string; agentId: string; success: boolean }
   | { type: 'agent:error'; runId: string; agentId: string; error: string; errorKind?: import('./errors.js').AdapterErrorKind }
+  | { type: 'quota:paused'; group: string; agentId: string; taskId: string; until: string; resetKnown: boolean; reason: string }
+  | { type: 'quota:resumed'; group: string; manual: boolean }
   | { type: 'run:retry'; runId: string; attempt: number; delay_ms: number }
   | { type: 'orchestrator:tick'; running: number; queued: number }
   | { type: 'orchestrator:stall_detected'; runId: string }

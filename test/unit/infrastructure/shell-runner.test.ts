@@ -10,9 +10,12 @@ const node = JSON.stringify(process.execPath);
 const runner = new ShellRunner(new ProcessManager());
 const cwd = os.tmpdir();
 
-describe('ShellRunner', { timeout: 30_000 }, () => {
+// Generous budgets: starting node through the shell can take seconds on a loaded Windows box.
+const RUN_TIMEOUT_MS = 60_000;
+
+describe('ShellRunner', { timeout: 90_000 }, () => {
   it('returns exit code 0 and captures stdout and stderr', async () => {
-    const result = await runner.run(`${node} -e "console.log('out'); console.error('err')"`, { cwd, timeoutMs: 15_000 });
+    const result = await runner.run(`${node} -e "console.log('out'); console.error('err')"`, { cwd, timeoutMs: RUN_TIMEOUT_MS });
 
     expect(result.exitCode).toBe(0);
     expect(result.timedOut).toBe(false);
@@ -21,20 +24,20 @@ describe('ShellRunner', { timeout: 30_000 }, () => {
   });
 
   it('returns the non-zero exit code', async () => {
-    const result = await runner.run(`${node} -e "process.exit(3)"`, { cwd, timeoutMs: 15_000 });
+    const result = await runner.run(`${node} -e "process.exit(3)"`, { cwd, timeoutMs: RUN_TIMEOUT_MS });
 
     expect(result.exitCode).toBe(3);
   });
 
   it('interprets the command line with the shell (&&)', async () => {
-    const result = await runner.run(`${node} -e "console.log('a')" && ${node} -e "console.log('b')"`, { cwd, timeoutMs: 15_000 });
+    const result = await runner.run(`${node} -e "console.log('a')" && ${node} -e "console.log('b')"`, { cwd, timeoutMs: RUN_TIMEOUT_MS });
 
     expect(result.exitCode).toBe(0);
     expect(result.output.replace(/\r/g, '')).toMatch(/a\nb/);
   });
 
   it('runs in the given cwd', async () => {
-    const result = await runner.run(`${node} -e "console.log(process.cwd())"`, { cwd, timeoutMs: 15_000 });
+    const result = await runner.run(`${node} -e "console.log(process.cwd())"`, { cwd, timeoutMs: RUN_TIMEOUT_MS });
 
     expect(result.output.toLowerCase()).toContain(os.tmpdir().toLowerCase().slice(-10));
   });
@@ -52,7 +55,7 @@ describe('ShellRunner', { timeout: 30_000 }, () => {
   });
 
   it('keeps only the tail of very long output', async () => {
-    const result = await runner.run(`${node} -e "process.stdout.write('x'.repeat(200000) + 'END')"`, { cwd, timeoutMs: 15_000 });
+    const result = await runner.run(`${node} -e "process.stdout.write('x'.repeat(200000) + 'END')"`, { cwd, timeoutMs: RUN_TIMEOUT_MS });
 
     expect(result.output.endsWith('END')).toBe(true);
     expect(result.output.length).toBeLessThanOrEqual(64 * 1024);

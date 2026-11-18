@@ -163,8 +163,8 @@ export const ERROR_HINTS: Record<AdapterErrorKind, AdapterErrorHint> = {
     fix: 'Increase the timeout with: orch config set agent_timeout <ms>',
   },
   [AdapterErrorKind.RATE_LIMIT]: {
-    message: 'API rate limit reached.',
-    fix: 'Wait and retry with: orch task retry <id>',
+    message: 'Usage limit reached — paused until reset.',
+    fix: 'Resumes automatically. Resume early with: orch agent resume <id>',
   },
   [AdapterErrorKind.PROCESS_CRASH]: {
     message: 'Agent process crashed.',
@@ -230,6 +230,19 @@ function stringifyErrorValue(value: unknown): string {
   }
 }
 
+/** Provider messages meaning "quota / usage limit reached" (lowercased input). */
+const USAGE_LIMIT_PATTERNS = [
+  'rate limit', 'rate_limit', '429', 'too many requests',
+  // Not a bare "limit reached": "Context limit reached" is not a quota problem.
+  'usage limit', 'hit your limit', 'hour limit', 'daily limit', 'weekly limit', 'session limit',
+  'quota exceeded', 'exceeded your current quota',
+  'resource_exhausted', 'resource exhausted', 'out of credits', 'credit balance is too low',
+];
+
+export function isUsageLimitMessage(lowerCaseMessage: string): boolean {
+  return USAGE_LIMIT_PATTERNS.some((p) => lowerCaseMessage.includes(p));
+}
+
 export function classifyAdapterError(error: string, exitCode?: number): AdapterErrorKind {
   const lower = error.toLowerCase();
 
@@ -245,7 +258,7 @@ export function classifyAdapterError(error: string, exitCode?: number): AdapterE
   if (lower.includes('timeout') || lower.includes('timed out') || lower.includes('etimedout')) {
     return AdapterErrorKind.TIMEOUT;
   }
-  if (lower.includes('rate limit') || lower.includes('429') || lower.includes('too many requests')) {
+  if (isUsageLimitMessage(lower)) {
     return AdapterErrorKind.RATE_LIMIT;
   }
   if (exitCode !== undefined && exitCode !== 0) {

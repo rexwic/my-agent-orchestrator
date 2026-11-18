@@ -9,7 +9,7 @@
 
 import type { OrchestratorConfig } from './domain/config.js';
 import type { CliContext } from './cli/context.js';
-import type { ITaskStore, IAgentStore, IRunStore, IStateStore, IConfigStore, IContextStore, IMessageStore, IGoalStore, ITeamStore } from './infrastructure/storage/interfaces.js';
+import type { ITaskStore, IAgentStore, IRunStore, IStateStore, IConfigStore, IContextStore, IMessageStore, IGoalStore, ITeamStore, IQuotaStore } from './infrastructure/storage/interfaces.js';
 import type { IWorkspaceManager } from './infrastructure/workspace/interface.js';
 import type { ITemplateEngine } from './infrastructure/template/template-engine.js';
 import type { IProcessManager } from './infrastructure/process/process-manager.js';
@@ -28,6 +28,7 @@ import { ContextStore } from './infrastructure/storage/context-store.js';
 import { MessageStore } from './infrastructure/storage/message-store.js';
 import { GoalStore } from './infrastructure/storage/goal-store.js';
 import { TeamStore } from './infrastructure/storage/team-store.js';
+import { QuotaStore } from './infrastructure/storage/quota-store.js';
 
 import { EventBus } from './application/event-bus.js';
 import { TaskService } from './application/task-service.js';
@@ -36,6 +37,7 @@ import { RunService } from './application/run-service.js';
 import { MessageService } from './application/message-service.js';
 import { GoalService } from './application/goal-service.js';
 import { TeamService } from './application/team-service.js';
+import { QuotaService } from './application/quota-service.js';
 
 import type { Orchestrator } from './application/orchestrator.js';
 import type { DoctorService } from './application/doctor-service.js';
@@ -60,6 +62,7 @@ export interface LightContainer {
   messageStore: IMessageStore;
   goalStore: IGoalStore;
   teamStore: ITeamStore;
+  quotaStore: IQuotaStore;
 
   // Application — services only
   eventBus: EventBus;
@@ -69,6 +72,8 @@ export interface LightContainer {
   messageService: MessageService;
   goalService: GoalService;
   teamService: TeamService;
+  /** Usage-limit pauses per account (quota group). */
+  quotaService: QuotaService;
 }
 
 /** Full container — everything from light + orchestrator, adapters, workspace, template. */
@@ -109,6 +114,7 @@ export async function buildLightContainer(context: CliContext): Promise<LightCon
   const messageStore = new MessageStore(paths);
   const goalStore = new GoalStore(paths);
   const teamStore = new TeamStore(paths);
+  const quotaStore = new QuotaStore(paths);
 
   // Application — services
   const eventBus = new EventBus();
@@ -118,6 +124,7 @@ export async function buildLightContainer(context: CliContext): Promise<LightCon
   const messageService = new MessageService(messageStore, agentStore, teamStore, eventBus);
   const goalService = new GoalService(goalStore, eventBus, agentService, taskService, contextStore);
   const teamService = new TeamService(teamStore, agentStore, taskStore, eventBus);
+  const quotaService = new QuotaService(quotaStore, eventBus);
 
   return {
     context,
@@ -134,6 +141,7 @@ export async function buildLightContainer(context: CliContext): Promise<LightCon
     messageStore,
     goalStore,
     teamStore,
+    quotaStore,
     eventBus,
     taskService,
     agentService,
@@ -141,6 +149,7 @@ export async function buildLightContainer(context: CliContext): Promise<LightCon
     messageService,
     goalService,
     teamService,
+    quotaService,
   };
 }
 
@@ -230,6 +239,7 @@ export async function buildFullContainer(context: CliContext): Promise<Container
     messageService: light.messageService,
     goalStore: light.goalStore,
     skillLoader,
+    quotaStore: light.quotaStore,
     config: light.config,
     projectRoot: context.projectRoot,
     lockPath: light.paths.lockPath,
