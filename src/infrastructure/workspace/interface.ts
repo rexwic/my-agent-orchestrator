@@ -19,4 +19,6 @@ export interface IWorkspaceManager {
   validate(workspacePath: string, projectRoot: string): void;
   /** Get files changed on a worktree branch relative to its merge-base. */
   getChangedFiles(branch: string): Promise<string[]>;
+  /** Commit all uncommitted changes in a worktree. Returns false if there was nothing to commit. */
+  commitAll(workspacePath: string, message: string): Promise<boolean>;
 }

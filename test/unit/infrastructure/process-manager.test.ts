@@ -51,6 +51,16 @@ describe('ProcessManager', () => {
       expect(() => manager.spawn('bad-cmd', [])).toThrow('Failed to spawn process');
     });
 
+    it('swallows the async spawn error of a process that failed to start (no uncaught exception)', async () => {
+      const realManager = new ProcessManager();
+      const { spawn: realSpawn } = await vi.importActual<typeof childProcess>('node:child_process');
+      vi.mocked(childProcess.spawn).mockImplementation(realSpawn as any);
+
+      expect(() => realManager.spawn('definitely-not-a-command-orch', [])).toThrow('Failed to spawn process');
+      // Give the ChildProcess time to emit its ENOENT 'error' event; an unhandled one fails the run.
+      await new Promise((r) => setTimeout(r, 200));
+    });
+
     it('foreground spawns are neither detached nor unref\'d (keeps event loop alive)', () => {
       const proc = mockSpawnProc();
 

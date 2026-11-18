@@ -5,7 +5,7 @@
  */
 
 import type { ApprovalPolicy } from './agent.js';
-import type { WorkspaceMode } from './task.js';
+import type { ReviewCriterion, WorkspaceMode } from './task.js';
 
 export interface ProjectConfig {
   name: string;
@@ -33,6 +33,24 @@ export interface SchedulingConfig {
   retry_max_delay_ms: number;
 }
 
+/**
+ * A shell command, either the same on every platform or per platform.
+ * Platform keys match `process.platform`; `default` is used when no key matches.
+ *
+ *   test_pass: "./mvnw -q test"
+ *   test_pass: { default: "./mvnw -q test", win32: "mvnw.cmd -q test" }
+ */
+export type PlatformCommand =
+  | string
+  | { default?: string; win32?: string; darwin?: string; linux?: string };
+
+export interface ReviewConfig {
+  /** Per-criterion timeout. */
+  timeout_ms: number;
+  /** Overrides for the built-in criterion commands (npm test / npx tsc --noEmit / npm run lint). */
+  commands: Partial<Record<ReviewCriterion, PlatformCommand>>;
+}
+
 export interface OrchestratorConfig {
   project: ProjectConfig;
   defaults: {
@@ -40,6 +58,8 @@ export interface OrchestratorConfig {
     task: TaskDefaults;
   };
   scheduling: SchedulingConfig;
+  /** Auto-review (review_criteria) settings. Optional for configs written before it existed. */
+  review?: ReviewConfig;
   prompt?: {
     template?: string;
     system_template?: string;
@@ -70,5 +90,9 @@ export const DEFAULT_CONFIG: OrchestratorConfig = {
     max_concurrent_agents: 6,
     retry_base_delay_ms: 10_000,
     retry_max_delay_ms: 300_000,
+  },
+  review: {
+    timeout_ms: 600_000,
+    commands: {},
   },
 };

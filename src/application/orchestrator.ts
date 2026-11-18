@@ -38,6 +38,8 @@ import type { TaskService } from './task-service.js';
 import type { AgentService } from './agent-service.js';
 import type { RunService } from './run-service.js';
 import { ReviewRunner } from './review-runner.js';
+import { ReviewGate } from './review-gate.js';
+import { ShellRunner, type IShellRunner } from '../infrastructure/process/shell-runner.js';
 
 /** Max serialized event data written to JSONL (8 KB) */
 const MAX_EVENT_DATA_LEN = 8192;
@@ -61,6 +63,8 @@ export interface OrchestratorDeps {
   messageService?: import('./message-service.js').MessageService;
   goalStore?: IGoalStore;
   skillLoader?: ISkillLoader;
+  /** Runs review_criteria commands. Defaults to a ShellRunner on processManager. */
+  shellRunner?: IShellRunner;
   config: OrchestratorConfig;
   projectRoot: string;
   lockPath: string;
@@ -106,7 +110,17 @@ export class Orchestrator {
   /** Promise-chain mutex to serialize critical state mutations. */
   private stateMutex: Promise<void> = Promise.resolve();
 
+  private readonly reviewGate: ReviewGate;
+  private readonly shellRunner: IShellRunner;
+
   constructor(private readonly deps: OrchestratorDeps) {
+    this.reviewGate = new ReviewGate({
+      taskStore: deps.taskStore,
+      taskService: deps.taskService,
+      workspaceManager: deps.workspaceManager,
+      eventBus: deps.eventBus,
+    });
+    this.shellRunner = deps.shellRunner ?? new ShellRunner(deps.processManager);
     this.cachedTaskStore = new CachedTaskStore(deps.taskStore);
     this.cachedAgentStore = new CachedAgentStore(deps.agentStore);
     this.cachedGoalStore = deps.goalStore ? new CachedGoalStore(deps.goalStore) : null;
@@ -1393,6 +1407,17 @@ export class Orchestrator {
     const task = await this.deps.taskStore.get(taskId);
     if (!task) return;
 
+    // Worktree: commit whatever the agent left uncommitted. Otherwise the branch
+    // merged on approval has no new commits and cleanup() would delete the work.
+    let commitError: string | undefined;
+    if (task.proof?.branch && task.workspace) {
+      try {
+        await this.deps.workspaceManager.commitAll(task.workspace, `orch: ${task.title} (${task.id})`);
+      } catch (err) {
+        commitError = err instanceof Error ? err.message : String(err);
+      }
+    }
+
     // If adapter didn't report files, try git diff on the worktree branch
     let effectiveFilesChanged = filesChanged;
     if ((!effectiveFilesChanged || effectiveFilesChanged.length === 0) && task.proof?.branch) {
@@ -1460,41 +1485,10 @@ export class Orchestrator {
         state.stats.total_tokens.input + state.stats.total_tokens.output + state.stats.total_tokens.reasoning;
     }
 
-    // Auto merge-back: if task used a worktree branch, merge into current branch
-    if (task.proof?.branch) {
-      try {
-        const mergeResult = await this.deps.workspaceManager.mergeBack(task.proof.branch);
-        if (mergeResult.success) {
-          this.deps.eventBus.emit({
-            type: 'workspace:merge_succeeded',
-            taskId,
-            branch: task.proof.branch,
-          });
-          // Clean up worktree and branch after successful merge
-          await this.deps.workspaceManager.cleanup(taskId, task.proof.branch).catch((err) => {
-            this.deps.eventBus.emit({
-              type: 'orchestrator:error',
-              error: err instanceof Error ? err.message : String(err),
-              context: `workspace cleanup for ${taskId}`,
-              fatal: false,
-            });
-          });
-        } else {
-          // Merge conflict: force task to review regardless of auto-approve
-          this.deps.eventBus.emit({
-            type: 'workspace:merge_conflict',
-            taskId,
-            branch: task.proof.branch,
-            conflictInfo: mergeResult.conflictInfo,
-          });
-          await this.forceTaskToReview(task, agentId, `MERGE CONFLICT: ${mergeResult.conflictInfo}`);
-          return;
-        }
-      } catch (err) {
-        const error = err instanceof Error ? err.message : String(err);
-        await this.forceTaskToReview(task, agentId, `MERGE ERROR: ${error}`);
-        return;
-      }
+    // Work stays on its worktree branch until approved — merging happens in ReviewGate.
+    if (commitError) {
+      await this.forceTaskToReview(task, agentId, `COMMIT ERROR: ${commitError}`);
+      return;
     }
 
     // Update task status — force-write via store if service validation fails
@@ -1531,12 +1525,15 @@ export class Orchestrator {
       await this.deps.agentStore.save(agentAfter);
     }
 
-    // Auto-review: if task landed in 'review' and has review_criteria, run them
-    if (newStatus === 'review' && task.review_criteria?.length) {
-      await this.runAutoReview(taskId, task.review_criteria, task.workspace ?? this.deps.projectRoot, autoApprove);
-    } else if (newStatus === 'review' && autoApprove) {
-      // Auto-approve: skip review and transition review → done immediately
-      await this.deps.taskService.updateStatus(taskId, 'done');
+    // Review gate. With review_criteria, passing them approves the task and failing
+    // keeps it in review regardless of approval_policy (no force-approve). Without
+    // criteria, an auto policy approves immediately; otherwise a human approves.
+    // Approval merges the worktree branch; dependents unblock only once it is done.
+    if (newStatus === 'review') {
+      const approved = task.review_criteria?.length
+        ? await this.runAutoReview(taskId, task.review_criteria, task.workspace ?? this.deps.projectRoot)
+        : autoApprove;
+      if (approved) await this.approveReviewed(taskId);
     }
 
     await this.saveState();
@@ -1652,23 +1649,21 @@ export class Orchestrator {
   }
 
   /**
-   * Run automatic review criteria on a task in 'review' status.
-   * If all criteria pass, transition review → done.
-   * If any fail, stay in review with results attached.
+   * Run automatic review criteria on a task in 'review' status, in its workspace
+   * (the worktree for worktree tasks — not yet merged). Saves the results on the
+   * task and returns whether all criteria passed. Never changes the status.
    */
   private async runAutoReview(
     taskId: string,
     criteria: import('../domain/task.js').ReviewCriterion[],
     cwd: string,
-    autoApprove = false,
-  ): Promise<void> {
-    const runner = new ReviewRunner({ cwd });
+  ): Promise<boolean> {
+    const runner = new ReviewRunner({ cwd, shell: this.shellRunner, review: this.deps.config.review });
     const results = await runner.runAll(criteria);
     const allPassed = ReviewRunner.allPassed(results);
 
-    // Save review results on task
     const task = await this.deps.taskStore.get(taskId);
-    if (!task) return;
+    if (!task) return false;
 
     task.review_results = results;
     task.proof = {
@@ -1678,7 +1673,6 @@ export class Orchestrator {
     };
     await this.deps.taskStore.save(task);
 
-    // Emit auto-review event
     this.deps.eventBus.emit({
       type: 'task:auto_reviewed',
       taskId,
@@ -1686,44 +1680,26 @@ export class Orchestrator {
       results,
     });
 
-    // If all passed, auto-approve: review → done
-    // If criteria failed but autoApprove is set, still transition to done (with warning)
-    if (allPassed || autoApprove) {
-      if (!allPassed) {
-        this.deps.eventBus.emit({
-          type: 'orchestrator:error',
-          error: `Review criteria failed for task ${taskId} but autoApprove is set — force-approving`,
-          context: 'auto-review-with-auto-approve',
-          fatal: false,
-        });
-      }
-      try {
-        await this.deps.taskService.updateStatus(taskId, 'done');
-      } catch (validationErr) {
-        const error = validationErr instanceof Error ? validationErr.message : String(validationErr);
-        this.deps.eventBus.emit({
-          type: 'orchestrator:error',
-          error,
-          context: `auto-review transition failed for task ${taskId} -> done, force-writing`,
-          fatal: false,
-        });
-        task.status = 'done';
-        task.updated_at = new Date().toISOString();
-        await this.deps.taskStore.save(task).catch((saveErr) => {
-          this.deps.eventBus.emit({
-            type: 'orchestrator:error',
-            error: saveErr instanceof Error ? saveErr.message : String(saveErr),
-            context: `force-write task ${taskId} to store failed (auto-review)`,
-            fatal: false,
-          });
-        });
-      }
+    return allPassed;
+  }
+
+  /** Approve a reviewed task (merge + done). On merge failure it stays in review. */
+  private async approveReviewed(taskId: string): Promise<void> {
+    try {
+      await this.reviewGate.approve(taskId);
+    } catch (err) {
+      this.deps.eventBus.emit({
+        type: 'orchestrator:error',
+        error: err instanceof Error ? err.message : String(err),
+        context: `approve task ${taskId}`,
+        fatal: false,
+      });
     }
   }
 
   /**
    * Force a task to 'review' status with a summary prefix.
-   * Used when merge-back fails (conflict or infrastructure error).
+   * Used when committing the agent's worktree changes fails (e.g. a commit hook rejects them).
    */
   private async forceTaskToReview(
     task: import('../domain/task.js').Task,

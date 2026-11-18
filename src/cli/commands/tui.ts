@@ -103,7 +103,9 @@ export function registerTuiCommand(program: Command, container: Container): void
       };
 
       const onApproveTask = async (taskId: string) => {
-        await container.taskService.updateStatus(taskId, 'done');
+        // Merges the task's worktree branch first; on conflict the task stays in review.
+        const result = await container.reviewGate.approve(taskId);
+        if (!result.ok) throw new Error(result.detail);
       };
 
       const onRejectTask = async (taskId: string, feedback?: string) => {

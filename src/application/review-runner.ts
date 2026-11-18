@@ -2,41 +2,82 @@
  * ReviewRunner — automatic review of completed tasks.
  *
  * Executes review criteria (test_pass, typecheck, lint) as shell commands
- * and returns pass/fail results. Used by the orchestrator to auto-approve
- * tasks that have review_criteria defined.
+ * and returns pass/fail results. The commands come from `review.commands`
+ * in .orchestry/config.yml (optionally per platform) and default to the
+ * npm/TypeScript commands below, so e.g. a Maven project can configure
+ * `test_pass: ./mvnw -q test`.
  *
- * Staged evaluation: criteria are sorted by speed (typecheck → test → lint)
+ * Staged evaluation: criteria are sorted by speed (typecheck → lint → test)
  * and execution stops on first failure (fail-fast) to save compute.
  */
 
-import { execFile } from 'node:child_process';
-import { resolveCommand } from '../infrastructure/process/resolve-command.js';
+import type { PlatformCommand, ReviewConfig } from '../domain/config.js';
 import type { ReviewCriterion, ReviewResult } from '../domain/task.js';
+import type { IShellRunner } from '../infrastructure/process/shell-runner.js';
 
-const CRITERION_COMMANDS: Record<ReviewCriterion, { cmd: string; args: string[] }> = {
-  test_pass: { cmd: 'npm', args: ['test'] },
-  typecheck: { cmd: 'npx', args: ['tsc', '--noEmit'] },
-  lint: { cmd: 'npm', args: ['run', 'lint'] },
+/** Built-in commands, used when config.yml does not override a criterion. */
+export const DEFAULT_REVIEW_COMMANDS: Readonly<Record<ReviewCriterion, string>> = {
+  test_pass: 'npm test',
+  typecheck: 'npx tsc --noEmit',
+  lint: 'npm run lint',
 };
+
+export const DEFAULT_REVIEW_TIMEOUT_MS = 600_000;
 
 /** Execution order: fastest checks first. */
 const CRITERION_ORDER: readonly ReviewCriterion[] = ['typecheck', 'lint', 'test_pass'];
 
+/** Characters of output kept per result (tail — build tools print the failure summary last). */
+const RESULT_OUTPUT_CHARS = 2000;
+
 export interface ReviewRunnerOptions {
   cwd: string;
-  timeout_ms?: number;
+  shell: IShellRunner;
+  /** `review` section of the project config. */
+  review?: Partial<ReviewConfig>;
+  /** Override for tests; defaults to process.platform. */
+  platform?: NodeJS.Platform;
   /** When true, stop on first failed criterion (default: true). */
   fail_fast?: boolean;
 }
 
+/**
+ * Pick the command for a criterion: config override (platform key, then `default`),
+ * else the built-in default. Blank or non-string values fall back to the default.
+ */
+export function resolveReviewCommand(
+  criterion: ReviewCriterion,
+  commands: Partial<Record<ReviewCriterion, PlatformCommand>> | undefined,
+  platform: NodeJS.Platform,
+): string {
+  const configured = commands?.[criterion];
+  let candidate: unknown;
+  if (typeof configured === 'string') {
+    candidate = configured;
+  } else if (configured && typeof configured === 'object') {
+    const byPlatform = configured as Record<string, unknown>;
+    candidate = typeof byPlatform[platform] === 'string' && (byPlatform[platform] as string).trim()
+      ? byPlatform[platform]
+      : byPlatform['default'];
+  }
+  return typeof candidate === 'string' && candidate.trim() ? candidate.trim() : DEFAULT_REVIEW_COMMANDS[criterion];
+}
+
 export class ReviewRunner {
   private readonly cwd: string;
+  private readonly shell: IShellRunner;
+  private readonly commands: ReviewConfig['commands'] | undefined;
   private readonly timeoutMs: number;
+  private readonly platform: NodeJS.Platform;
   private readonly failFast: boolean;
 
   constructor(options: ReviewRunnerOptions) {
     this.cwd = options.cwd;
-    this.timeoutMs = options.timeout_ms ?? 120_000;
+    this.shell = options.shell;
+    this.commands = options.review?.commands;
+    const timeout = options.review?.timeout_ms;
+    this.timeoutMs = typeof timeout === 'number' && timeout > 0 ? timeout : DEFAULT_REVIEW_TIMEOUT_MS;
+    this.platform = options.platform ?? process.platform;
     this.failFast = options.fail_fast ?? true;
   }
 
@@ -70,37 +111,29 @@ export class ReviewRunner {
   static formatReport(results: ReviewResult[]): string {
     const lines = results.map((r) => {
       const icon = r.passed ? '✓' : '✗';
-      const truncated = r.output;
-      return `${icon} ${r.criterion}: ${r.passed ? 'PASSED' : 'FAILED'}\n  ${truncated}`;
+      return `${icon} ${r.criterion}: ${r.passed ? 'PASSED' : 'FAILED'}\n  ${r.output}`;
     });
     return lines.join('\n\n');
   }
 
-  private runCriterion(criterion: ReviewCriterion): Promise<ReviewResult> {
-    const { cmd, args } = CRITERION_COMMANDS[criterion];
-
-    return new Promise((resolve) => {
-      let resolved;
-      try {
-        resolved = resolveCommand(cmd, args);
-      } catch (err) {
-        resolve({ criterion, passed: false, output: err instanceof Error ? err.message : String(err) });
-        return;
-      }
-      execFile(
-        resolved.command,
-        resolved.args,
-        { cwd: this.cwd, timeout: this.timeoutMs, maxBuffer: 1024 * 1024, shell: resolved.shell, windowsHide: true },
-        (error, stdout, stderr) => {
-          const output = (stdout + '\n' + stderr).trim();
-          resolve({
-            criterion,
-            passed: !error,
-            output: output.slice(0, 2000),
-          });
-        },
-      );
+  private async runCriterion(criterion: ReviewCriterion): Promise<ReviewResult> {
+    const command = resolveReviewCommand(criterion, this.commands, this.platform);
+    const { exitCode, output, timedOut } = await this.shell.run(command, {
+      cwd: this.cwd,
+      timeoutMs: this.timeoutMs,
     });
+
+    const status = timedOut
+      ? `timed out after ${Math.round(this.timeoutMs / 1000)}s`
+      : exitCode === null ? 'failed to run' : `exit ${exitCode}`;
+    const header = `$ ${command}  (${status})`;
+    const body = output.length > RESULT_OUTPUT_CHARS ? `…${output.slice(-RESULT_OUTPUT_CHARS)}` : output;
+
+    return {
+      criterion,
+      passed: !timedOut && exitCode === 0,
+      output: body ? `${header}\n${body}` : header,
+    };
   }
 }
 

@@ -33,6 +33,8 @@ export interface TaskProof {
   files_changed: string[];
   test_results?: string;
   agent_summary?: string;
+  /** Worktree branch has been merged into the main branch (set on approval). */
+  merged?: boolean;
 }
 
 export interface Task {

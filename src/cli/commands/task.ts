@@ -6,6 +6,7 @@
 
 import type { Command } from 'commander';
 import type { LightContainer } from '../../container.js';
+import { WorkspaceError } from '../../domain/errors.js';
 import {
   statusIcon,
   priorityLabel,
@@ -278,10 +279,19 @@ export function registerTaskCommand(program: Command, container: LightContainer)
   // task approve
   task
     .command('approve <id>')
-    .description('Approve a task in review')
+    .description('Approve a task in review (merges its worktree branch, then marks it done)')
     .action(async (id: string) => {
-      await container.taskService.updateStatus(id, 'done');
-      printSuccess(`Approved ${id}`);
+      // Approval merges the worktree branch, which needs the workspace manager.
+      const { buildFullContainer } = await import('../../container.js');
+      const full = await buildFullContainer(container.context);
+      const result = await full.reviewGate.approve(id);
+      if (!result.ok) {
+        throw new WorkspaceError(
+          `Could not approve ${id}: ${result.detail}`,
+          'The task stays in review and its worktree is kept. Resolve the conflict (or reject the task), then approve again.',
+        );
+      }
+      printSuccess(`Approved ${id}${result.merged ? ' (merged)' : ''}`);
     });
 
   // task reject

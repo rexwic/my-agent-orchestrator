@@ -39,6 +39,7 @@ import { TeamService } from './application/team-service.js';
 
 import type { Orchestrator } from './application/orchestrator.js';
 import type { DoctorService } from './application/doctor-service.js';
+import type { ReviewGate } from './application/review-gate.js';
 
 /** Light container — stores + services. No heavy deps (adapters, orchestrator, LiquidJS). */
 export interface LightContainer {
@@ -79,6 +80,8 @@ export interface Container extends LightContainer {
   skillLoader: ISkillLoader;
   doctorService: DoctorService;
   orchestrator: Orchestrator;
+  /** Approves tasks in review: merges the worktree branch, then marks done. */
+  reviewGate: ReviewGate;
 }
 
 /**
@@ -169,6 +172,7 @@ export async function buildFullContainer(context: CliContext): Promise<Container
     { SkillLoader },
     { Orchestrator },
     { DoctorService },
+    { ReviewGate },
   ] = await Promise.all([
     import('./infrastructure/process/process-manager.js'),
     import('./infrastructure/adapters/registry.js'),
@@ -185,6 +189,7 @@ export async function buildFullContainer(context: CliContext): Promise<Container
     import('./infrastructure/skills/skill-loader.js'),
     import('./application/orchestrator.js'),
     import('./application/doctor-service.js'),
+    import('./application/review-gate.js'),
   ]);
 
   const processManager = new ProcessManager();
@@ -239,6 +244,12 @@ export async function buildFullContainer(context: CliContext): Promise<Container
     skillLoader,
     doctorService,
     orchestrator,
+    reviewGate: new ReviewGate({
+      taskStore: light.taskStore,
+      taskService: light.taskService,
+      workspaceManager,
+      eventBus: light.eventBus,
+    }),
   };
 }
 

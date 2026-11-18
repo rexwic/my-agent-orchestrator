@@ -1,186 +1,171 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { ReviewRunner } from '../../../src/application/review-runner.js';
-import type { ReviewCriterion, ReviewResult } from '../../../src/domain/task.js';
+import { describe, it, expect, vi } from 'vitest';
+import {
+  ReviewRunner,
+  resolveReviewCommand,
+  DEFAULT_REVIEW_COMMANDS,
+  DEFAULT_REVIEW_TIMEOUT_MS,
+} from '../../../src/application/review-runner.js';
+import type { ReviewResult } from '../../../src/domain/task.js';
+import type { IShellRunner, ShellRunResult } from '../../../src/infrastructure/process/shell-runner.js';
 
-// Mock execFile from node:child_process
-vi.mock('node:child_process', () => ({
-  execFile: vi.fn(),
-}));
-
-// Command resolution depends on the host PATH on Windows (npm → node npm-cli.js);
-// keep it the identity so assertions are host-independent.
-vi.mock('../../../src/infrastructure/process/resolve-command.js', () => ({
-  resolveCommand: (command: string, args: string[]) => ({ command, args, shell: false }),
-}));
-
-import { execFile } from 'node:child_process';
-const mockExecFile = vi.mocked(execFile);
-
-function simulateExecFile(exitCode: number, stdout: string, stderr: string) {
-  mockExecFile.mockImplementationOnce((_cmd, _args, _opts, callback) => {
-    const error = exitCode !== 0 ? Object.assign(new Error('failed'), { code: exitCode }) : null;
-    (callback as Function)(error, stdout, stderr);
-    return {} as any;
-  });
+function fakeShell(...results: ShellRunResult[]): IShellRunner & { run: ReturnType<typeof vi.fn> } {
+  const run = vi.fn(async () => results.shift() ?? { exitCode: 0, output: 'ok', timedOut: false });
+  return { run };
 }
 
-describe('ReviewRunner', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
+const pass: ShellRunResult = { exitCode: 0, output: 'ok', timedOut: false };
+const fail: ShellRunResult = { exitCode: 1, output: 'boom', timedOut: false };
+
+describe('resolveReviewCommand', () => {
+  it('falls back to the built-in default when nothing is configured', () => {
+    expect(resolveReviewCommand('test_pass', undefined, 'linux')).toBe('npm test');
+    expect(resolveReviewCommand('typecheck', {}, 'linux')).toBe(DEFAULT_REVIEW_COMMANDS.typecheck);
   });
 
-  describe('runAll', () => {
-    it('should run all criteria and return results', async () => {
-      const runner = new ReviewRunner({ cwd: '/tmp/test' });
+  it('uses a plain string on every platform', () => {
+    const commands = { test_pass: './gradlew test' };
+    expect(resolveReviewCommand('test_pass', commands, 'darwin')).toBe('./gradlew test');
+    expect(resolveReviewCommand('test_pass', commands, 'win32')).toBe('./gradlew test');
+  });
 
-      // Sorted order: typecheck first, then test_pass
-      simulateExecFile(0, 'No errors found', '');
-      simulateExecFile(0, 'All tests passed', '');
+  it('prefers the platform key, then default', () => {
+    const commands = { test_pass: { default: './mvnw -q test', win32: 'mvnw.cmd -q test' } };
+    expect(resolveReviewCommand('test_pass', commands, 'win32')).toBe('mvnw.cmd -q test');
+    expect(resolveReviewCommand('test_pass', commands, 'darwin')).toBe('./mvnw -q test');
+  });
+
+  it('falls back to the built-in default when a platform map has no match', () => {
+    expect(resolveReviewCommand('lint', { lint: { win32: 'mvnw.cmd checkstyle:check' } }, 'linux')).toBe('npm run lint');
+  });
+
+  it('ignores blank and non-string values', () => {
+    expect(resolveReviewCommand('test_pass', { test_pass: '   ' }, 'linux')).toBe('npm test');
+    expect(resolveReviewCommand('test_pass', { test_pass: { win32: ' ', default: 'mvn test' } }, 'win32')).toBe('mvn test');
+    expect(resolveReviewCommand('test_pass', { test_pass: 42 as unknown as string }, 'linux')).toBe('npm test');
+  });
+});
+
+describe('ReviewRunner', () => {
+  describe('runAll', () => {
+    it('runs each criterion through the shell in the given cwd', async () => {
+      const shell = fakeShell(pass, pass);
+      const runner = new ReviewRunner({ cwd: '/proj', shell, platform: 'linux' });
 
       const results = await runner.runAll(['test_pass', 'typecheck']);
 
-      expect(results).toHaveLength(2);
-      expect(results[0]).toEqual({
-        criterion: 'typecheck',
-        passed: true,
-        output: expect.stringContaining('No errors found'),
-      });
-      expect(results[1]).toEqual({
-        criterion: 'test_pass',
-        passed: true,
-        output: expect.stringContaining('All tests passed'),
-      });
+      expect(results.map((r) => [r.criterion, r.passed])).toEqual([['typecheck', true], ['test_pass', true]]);
+      expect(shell.run).toHaveBeenCalledWith('npx tsc --noEmit', { cwd: '/proj', timeoutMs: DEFAULT_REVIEW_TIMEOUT_MS });
+      expect(shell.run).toHaveBeenCalledWith('npm test', { cwd: '/proj', timeoutMs: DEFAULT_REVIEW_TIMEOUT_MS });
     });
 
-    it('should sort criteria: typecheck → lint → test_pass', async () => {
-      const runner = new ReviewRunner({ cwd: '/tmp/test' });
-
-      simulateExecFile(0, 'tc ok', '');
-      simulateExecFile(0, 'lint ok', '');
-      simulateExecFile(0, 'test ok', '');
+    it('sorts criteria: typecheck → lint → test_pass', async () => {
+      const shell = fakeShell();
+      const runner = new ReviewRunner({ cwd: '/proj', shell, platform: 'linux' });
 
       const results = await runner.runAll(['test_pass', 'lint', 'typecheck']);
 
       expect(results.map((r) => r.criterion)).toEqual(['typecheck', 'lint', 'test_pass']);
     });
 
-    it('should stop on first failure in fail-fast mode (default)', async () => {
-      const runner = new ReviewRunner({ cwd: '/tmp/test' });
+    it('stops on first failure in fail-fast mode (default)', async () => {
+      const shell = fakeShell(fail);
+      const runner = new ReviewRunner({ cwd: '/proj', shell, platform: 'linux' });
 
-      // typecheck fails → lint and test_pass should NOT run
-      simulateExecFile(1, '', 'error TS2345: Argument of type');
-
-      const results = await runner.runAll(['test_pass', 'typecheck', 'lint']);
+      const results = await runner.runAll(['typecheck', 'test_pass']);
 
       expect(results).toHaveLength(1);
-      expect(results[0]!.criterion).toBe('typecheck');
       expect(results[0]!.passed).toBe(false);
-      expect(mockExecFile).toHaveBeenCalledTimes(1);
+      expect(shell.run).toHaveBeenCalledTimes(1);
     });
 
-    it('should run all criteria when fail_fast is false', async () => {
-      const runner = new ReviewRunner({ cwd: '/tmp/test', fail_fast: false });
+    it('runs all criteria when fail_fast is false', async () => {
+      const shell = fakeShell(fail, pass);
+      const runner = new ReviewRunner({ cwd: '/proj', shell, platform: 'linux', fail_fast: false });
 
-      simulateExecFile(1, '', 'type error');
-      simulateExecFile(1, '', 'lint error');
-      simulateExecFile(1, '', 'FAIL src/test.ts');
+      const results = await runner.runAll(['typecheck', 'test_pass']);
 
-      const results = await runner.runAll(['test_pass', 'typecheck', 'lint']);
-
-      expect(results).toHaveLength(3);
-      expect(results.every((r) => !r.passed)).toBe(true);
+      expect(results.map((r) => r.passed)).toEqual([false, true]);
     });
 
-    it('should mark failed criteria correctly', async () => {
-      const runner = new ReviewRunner({ cwd: '/tmp/test', fail_fast: false });
-
-      // Sorted order: typecheck, test_pass
-      simulateExecFile(0, 'No errors found', '');
-      simulateExecFile(1, '', 'error TS2345: Argument of type');
-
-      const results = await runner.runAll(['test_pass', 'typecheck']);
-
-      expect(results[0]!.passed).toBe(true);
-      expect(results[1]!.passed).toBe(false);
-      expect(results[1]!.output).toContain('TS2345');
-    });
-
-    it('should pass cwd and timeout to execFile', async () => {
-      const runner = new ReviewRunner({ cwd: '/my/project', timeout_ms: 60_000 });
-
-      simulateExecFile(0, 'ok', '');
+    it('uses configured commands and timeout', async () => {
+      const shell = fakeShell();
+      const runner = new ReviewRunner({
+        cwd: '/svc',
+        shell,
+        platform: 'win32',
+        review: { timeout_ms: 900_000, commands: { test_pass: { default: './mvnw -q test', win32: 'mvnw.cmd -q test' } } },
+      });
 
       await runner.runAll(['test_pass']);
 
-      expect(mockExecFile).toHaveBeenCalledWith(
-        'npm',
-        ['test'],
-        expect.objectContaining({ cwd: '/my/project', timeout: 60_000 }),
-        expect.any(Function),
-      );
+      expect(shell.run).toHaveBeenCalledWith('mvnw.cmd -q test', { cwd: '/svc', timeoutMs: 900_000 });
     });
 
-    it('should truncate output to 2000 chars', async () => {
-      const runner = new ReviewRunner({ cwd: '/tmp/test' });
-      const longOutput = 'x'.repeat(3000);
+    it('records the command and exit code in the output', async () => {
+      const runner = new ReviewRunner({ cwd: '/proj', shell: fakeShell({ exitCode: 1, output: 'Tests run: 3, Failures: 1', timedOut: false }), platform: 'linux' });
 
-      simulateExecFile(0, longOutput, '');
+      const [result] = await runner.runAll(['test_pass']);
 
-      const results = await runner.runAll(['test_pass']);
+      expect(result!.output).toBe('$ npm test  (exit 1)\nTests run: 3, Failures: 1');
+    });
 
-      expect(results[0]!.output.length).toBeLessThanOrEqual(2000);
+    it('treats a timeout as a failure even with exit code 0', async () => {
+      const runner = new ReviewRunner({
+        cwd: '/proj',
+        shell: fakeShell({ exitCode: 0, output: '', timedOut: true }),
+        platform: 'linux',
+        review: { timeout_ms: 5_000 },
+      });
+
+      const [result] = await runner.runAll(['test_pass']);
+
+      expect(result!.passed).toBe(false);
+      expect(result!.output).toContain('timed out after 5s');
+    });
+
+    it('treats a command that could not start as a failure', async () => {
+      const runner = new ReviewRunner({ cwd: '/proj', shell: fakeShell({ exitCode: null, output: 'spawn ENOENT', timedOut: false }), platform: 'linux' });
+
+      const [result] = await runner.runAll(['lint']);
+
+      expect(result!.passed).toBe(false);
+      expect(result!.output).toContain('failed to run');
+    });
+
+    it('keeps the tail of long output (failure summaries are printed last)', async () => {
+      const output = 'x'.repeat(5000) + 'BUILD FAILURE';
+      const runner = new ReviewRunner({ cwd: '/proj', shell: fakeShell({ exitCode: 1, output, timedOut: false }), platform: 'linux' });
+
+      const [result] = await runner.runAll(['test_pass']);
+
+      expect(result!.output.endsWith('BUILD FAILURE')).toBe(true);
+      expect(result!.output.length).toBeLessThan(2100);
     });
   });
 
   describe('allPassed', () => {
-    it('should return true when all results passed', () => {
-      const results: ReviewResult[] = [
-        { criterion: 'test_pass', passed: true, output: 'ok' },
-        { criterion: 'typecheck', passed: true, output: 'ok' },
-      ];
-      expect(ReviewRunner.allPassed(results)).toBe(true);
+    it('returns true when all passed', () => {
+      expect(ReviewRunner.allPassed([{ criterion: 'test_pass', passed: true, output: '' }])).toBe(true);
     });
 
-    it('should return false when any result failed', () => {
+    it('returns false when any failed or when empty', () => {
       const results: ReviewResult[] = [
-        { criterion: 'test_pass', passed: true, output: 'ok' },
-        { criterion: 'typecheck', passed: false, output: 'error' },
+        { criterion: 'test_pass', passed: true, output: '' },
+        { criterion: 'lint', passed: false, output: '' },
       ];
       expect(ReviewRunner.allPassed(results)).toBe(false);
-    });
-
-    it('should return false for empty results', () => {
       expect(ReviewRunner.allPassed([])).toBe(false);
     });
   });
 
   describe('formatReport', () => {
-    it('should format passing results with checkmarks', () => {
-      const results: ReviewResult[] = [
-        { criterion: 'test_pass', passed: true, output: '42 tests passed' },
-      ];
-      const report = ReviewRunner.formatReport(results);
-      expect(report).toContain('✓ test_pass: PASSED');
-      expect(report).toContain('42 tests passed');
-    });
-
-    it('should format failing results with X marks', () => {
-      const results: ReviewResult[] = [
-        { criterion: 'lint', passed: false, output: '3 errors found' },
-      ];
-      const report = ReviewRunner.formatReport(results);
-      expect(report).toContain('✗ lint: FAILED');
-      expect(report).toContain('3 errors found');
-    });
-
-    it('should format mixed results', () => {
-      const results: ReviewResult[] = [
-        { criterion: 'test_pass', passed: true, output: 'ok' },
-        { criterion: 'typecheck', passed: false, output: 'fail' },
-      ];
-      const report = ReviewRunner.formatReport(results);
-      expect(report).toContain('✓ test_pass: PASSED');
-      expect(report).toContain('✗ typecheck: FAILED');
+    it('formats results with icons', () => {
+      const report = ReviewRunner.formatReport([
+        { criterion: 'typecheck', passed: true, output: 'ok' },
+        { criterion: 'test_pass', passed: false, output: 'boom' },
+      ]);
+      expect(report).toContain('✓ typecheck: PASSED');
+      expect(report).toContain('✗ test_pass: FAILED');
     });
   });
 });

@@ -20,6 +20,12 @@ export interface ManagedSpawnOptions extends SpawnOptions {
    * event loop alive until they exit. Default: false (long-lived agent process).
    */
   foreground?: boolean;
+  /**
+   * POSIX: start the child in its own process group so kill/killWithGrace reach its
+   * descendants (e.g. `sh -c "mvn test"` → java). Default: true for background
+   * processes, false for foreground ones. Ignored on Windows (tree kill via taskkill).
+   */
+  processGroup?: boolean;
 }
 
 export interface IProcessManager {
@@ -113,20 +119,24 @@ export class ProcessManager implements IProcessManager {
   }
 
   spawn(command: string, args: string[], options?: ManagedSpawnOptions): SpawnResult {
-    const { foreground = false, ...spawnOptions } = options ?? {};
-    const resolved = this.resolve(command, args);
+    const { foreground = false, processGroup = !foreground, ...spawnOptions } = options ?? {};
+    // A caller-requested shell interprets the command line itself — nothing to resolve.
+    const resolved = spawnOptions.shell ? { command, args, shell: false } : this.resolve(command, args);
 
     const proc = spawn(resolved.command, resolved.args, {
       stdio: ['ignore', 'pipe', 'pipe'],
       // POSIX: new process group so killWithGrace(-pid) kills all children.
-      // Windows: detached would open a separate console window; kill() uses taskkill /T instead.
-      detached: !foreground && this.platform !== 'win32',
+      // Windows: detached would open a separate console window; killWithGrace uses taskkill /T instead.
+      detached: processGroup && this.platform !== 'win32',
       windowsHide: true,
       ...spawnOptions,
       ...(resolved.shell ? { shell: true } : {}),
     });
 
     if (!proc.pid) {
+      // The spawn error (ENOENT, bad cwd, …) is emitted asynchronously on `proc`. The caller
+      // never receives `proc`, so without a listener it would become an uncaught exception.
+      proc.once?.('error', () => {});
       throw new Error(`Failed to spawn process: ${command}`);
     }
 

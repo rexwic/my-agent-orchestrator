@@ -11,7 +11,7 @@ import type { Agent } from '../../domain/agent.js';
 import type { OrchestratorConfig } from '../../domain/config.js';
 import type { Task, WorkspaceMode } from '../../domain/task.js';
 import type { IProcessManager } from '../process/process-manager.js';
-import { validateWorkspacePath, sanitizeId } from '../storage/paths.js';
+import { validateWorkspacePath, sanitizeId, ORCHESTRY_DIR } from '../storage/paths.js';
 import { ensureDir } from '../storage/fs-utils.js';
 import type { IWorkspaceManager, PrepareResult } from './interface.js';
 import { MergeStrategy, type MergeResult } from './merge-strategy.js';
@@ -86,6 +86,43 @@ export class WorkspaceManager implements IWorkspaceManager {
     const dirRemoval = fs.rm(workspacePath, { recursive: true, force: true }).catch(() => {});
 
     await Promise.all([branchDeletion, dirRemoval]);
+  }
+
+  /**
+   * Commit everything the agent left uncommitted in a worktree.
+   *
+   * Agents usually edit files without committing; without this, merging the
+   * branch is a no-op and cleanup() deletes the work. `.orchestry/` is excluded:
+   * prepareWorktree() deletes it from the worktree, and staging that deletion
+   * would remove ORCH's state from the main branch on merge.
+   *
+   * Respects the repository's commit hooks. Uses a fallback identity only when
+   * git has no user.email configured. Returns false when there was nothing to commit.
+   */
+  async commitAll(workspacePath: string, message: string): Promise<boolean> {
+    const pathspec = ['--', '.', `:(exclude)${ORCHESTRY_DIR}`];
+
+    const status = await this.runGit(['status', '--porcelain', ...pathspec], workspacePath);
+    if (status.code !== 0) {
+      throw new WorkspaceError(`git status failed in ${workspacePath}: ${status.output}`);
+    }
+    if (!status.stdout.trim()) return false;
+
+    const add = await this.runGit(['add', '-A', ...pathspec], workspacePath);
+    if (add.code !== 0) {
+      throw new WorkspaceError(`git add failed in ${workspacePath}: ${add.output}`);
+    }
+
+    const identity = await this.runGit(['config', 'user.email'], workspacePath);
+    const identityArgs = identity.stdout.trim() ? [] : ['-c', 'user.name=ORCH', '-c', 'user.email=orch@localhost'];
+    const commit = await this.runGit([...identityArgs, 'commit', '-m', message], workspacePath);
+    if (commit.code !== 0) {
+      throw new WorkspaceError(
+        `git commit failed in ${workspacePath}: ${commit.output}`,
+        'A commit hook may have rejected it. Fix and commit inside the worktree, then approve the task.',
+      );
+    }
+    return true;
   }
 
   validate(workspacePath: string, projectRoot: string): void {
@@ -199,6 +236,24 @@ export class WorkspaceManager implements IWorkspaceManager {
       return { stdout, code };
     } catch {
       return { stdout: '', code: 1 };
+    }
+  }
+
+  /** Run git in a directory, capturing stdout and a combined, trimmed output for errors (non-throwing). */
+  private async runGit(args: string[], cwd: string): Promise<{ code: number; stdout: string; output: string }> {
+    try {
+      const { process: proc } = this.processManager.spawn('git', args, { cwd, foreground: true });
+      let stdout = '';
+      let stderr = '';
+      proc.stdout?.on('data', (chunk: Buffer) => { stdout += chunk.toString(); });
+      proc.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
+      const code = await new Promise<number>((resolve) => {
+        proc.on('close', (c) => resolve(c ?? 1));
+        proc.on('error', () => resolve(1));
+      });
+      return { code, stdout, output: `${stderr}\n${stdout}`.trim().slice(0, 1000) };
+    } catch (err) {
+      return { code: 1, stdout: '', output: err instanceof Error ? err.message : String(err) };
     }
   }
 

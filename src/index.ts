@@ -9,7 +9,7 @@ export type { Task, TaskStatus, CreateTaskInput, WorkspaceMode, TaskProof } from
 export type { Agent, AgentStatus, AgentConfig, CreateAgentInput, ApprovalPolicy, ReasoningEffort, AgentStats, AgentLastError } from './domain/agent.js';
 export type { Run, RunStatus, RunEvent, RunEventType, TokenUsage } from './domain/run.js';
 export { createTokenUsage } from './domain/run.js';
-export type { OrchestratorConfig, ProjectConfig, SchedulingConfig } from './domain/config.js';
+export type { OrchestratorConfig, ProjectConfig, SchedulingConfig, ReviewConfig, PlatformCommand } from './domain/config.js';
 export type { OrchestratorState, RunningEntry, RetryEntry } from './domain/state.js';
 export type { OrchestratorEvent, OrchestratorEventType, EventPayload } from './domain/events.js';
 export { OrchestryError, NotInitializedError, TaskNotFoundError, AgentNotFoundError, GoalHasPendingTasksError, WorkspaceError, AdapterErrorKind, ERROR_HINTS, classifyAdapterError } from './domain/errors.js';
@@ -27,6 +27,9 @@ export { TaskService } from './application/task-service.js';
 export { AgentService } from './application/agent-service.js';
 export { RunService } from './application/run-service.js';
 export { Orchestrator } from './application/orchestrator.js';
+export { ReviewGate } from './application/review-gate.js';
+export type { ApproveResult } from './application/review-gate.js';
+export { ReviewRunner, DEFAULT_REVIEW_COMMANDS, resolveReviewCommand } from './application/review-runner.js';
 
 // Infrastructure interfaces
 export type { IAgentAdapter, AgentEvent, ExecuteParams, AdapterTestResult } from './infrastructure/adapters/interface.js';
