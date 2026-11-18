@@ -103,9 +103,10 @@ export function registerTuiCommand(program: Command, container: Container): void
       };
 
       const onApproveTask = async (taskId: string) => {
-        // Merges the task's worktree branch first; on conflict the task stays in review.
-        const result = await container.reviewGate.approve(taskId);
-        if (!result.ok) throw new Error(result.detail);
+        // Worktree tasks are marked approved and integrated by the orchestrator in the
+        // background (sync main → re-review if needed → merge); failures keep them in review.
+        const outcome = await container.orchestrator.approveTask(taskId);
+        if (outcome.status === 'review') throw new Error(outcome.detail);
       };
 
       const onRejectTask = async (taskId: string, feedback?: string) => {

@@ -179,6 +179,9 @@ export function createMockWorkspaceManager(): IWorkspaceManager {
     validate: vi.fn(),
     getChangedFiles: vi.fn(async () => []),
     commitAll: vi.fn(async () => true),
+    targetHead: vi.fn(async () => ({ sha: 'main000', name: 'main' })),
+    syncWorktree: vi.fn(async () => ({ status: 'up_to_date' as const })),
+    unresolvedConflicts: vi.fn(async () => []),
   };
 }
 

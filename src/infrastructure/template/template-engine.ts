@@ -392,10 +392,11 @@ Use \`orch agent list\` to check current agent statuses. Find teammates by name/
 
 {% if feedback %}
 ## Review Feedback
-This task was previously completed but **rejected** during review with the following feedback:
-> {{ feedback }}
+This task was previously completed but **sent back** during review with the following feedback:
 
-**Important:** Address the feedback above. Focus on what the reviewer asked to change. Do NOT redo work that was already accepted.
+{{ feedback }}
+
+**Important:** Address the feedback above. Your earlier work is still in the workspace — build on it; do NOT redo work that was already accepted.
 {% endif %}
 
 {% if shared_context %}

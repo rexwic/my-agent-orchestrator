@@ -52,6 +52,12 @@ export interface ReviewConfig {
    * Parallel `mvn test` runs compete for CPU, fixed ports, test databases and ~/.m2.
    */
   max_parallel?: number;
+  /**
+   * Worktree tasks: how many times a task is sent back to its agent automatically
+   * (conflict when merging main in, or review failing on the merged result) before
+   * it waits in review for a human (default 3).
+   */
+  max_send_backs?: number;
   /** Overrides for the built-in criterion commands (npm test / npx tsc --noEmit / npm run lint). */
   commands: Partial<Record<ReviewCriterion, PlatformCommand>>;
 }
@@ -99,6 +105,7 @@ export const DEFAULT_CONFIG: OrchestratorConfig = {
   review: {
     timeout_ms: 600_000,
     max_parallel: 1,
+    max_send_backs: 3,
     commands: {},
   },
 };

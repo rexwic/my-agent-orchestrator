@@ -111,7 +111,7 @@ describe('Orchestrator review gate (worktree)', () => {
     expect(task!.proof?.merged).toBe(true);
   });
 
-  it('keeps the task in review and does not merge when criteria fail (even with auto policy)', async () => {
+  it('does not merge when criteria fail (even with auto policy): sent back to the agent with the report', async () => {
     const { finish, taskStore, workspaceManager, taskId } = await setup({
       criteria: ['test_pass'],
       shellResult: { exitCode: 1, output: 'Tests run: 3, Failures: 1', timedOut: false },
@@ -120,7 +120,8 @@ describe('Orchestrator review gate (worktree)', () => {
     await finish();
 
     const task = await taskStore.get(taskId);
-    expect(task!.status).toBe('review');
+    expect(task!.status).toBe('todo');
+    expect(task!.feedback).toContain('Failures: 1');
     expect(task!.review_results?.[0]).toMatchObject({ criterion: 'test_pass', passed: false });
     expect(task!.review_results?.[0]?.output).toContain('Failures: 1');
     expect(workspaceManager.mergeBack).not.toHaveBeenCalled();

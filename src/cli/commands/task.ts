@@ -282,19 +282,35 @@ export function registerTaskCommand(program: Command, container: LightContainer)
   // task approve
   task
     .command('approve <id>')
-    .description('Approve a task in review (merges its worktree branch, then marks it done)')
+    .description('Approve a task in review: merges the latest main into its worktree branch, re-reviews if main moved, merges it, marks it done')
     .action(async (id: string) => {
-      // Approval merges the worktree branch, which needs the workspace manager.
+      // Integration (git sync, review commands, merge) needs the full container.
       const { buildFullContainer } = await import('../../container.js');
       const full = await buildFullContainer(container.context);
-      const result = await full.reviewGate.approve(id);
-      if (!result.ok) {
-        throw new WorkspaceError(
-          `Could not approve ${id}: ${result.detail}`,
-          'The task stays in review and its worktree is kept. Resolve the conflict (or reject the task), then approve again.',
-        );
+      const outcome = await full.orchestrator.approveTask(id);
+      switch (outcome.status) {
+        case 'done':
+          printSuccess(`Approved ${id} — merged, done`);
+          return;
+        case 'queued':
+          printSuccess(`Approved ${id} — the running orchestrator will sync, verify and merge it`);
+          return;
+        case 'sent_back':
+          printSuccess(outcome.reason === 'conflict'
+            ? `Approved ${id}, but merging main into it conflicts (${(outcome.files ?? []).join(', ')}) — sent back to its agent`
+            : `Approved ${id}, but review failed after merging main — sent back to its agent`);
+          return;
+        case 'deferred':
+          printSuccess(`Approved ${id} — not merged yet (${outcome.detail}); the orchestrator retries it`);
+          return;
+        case 'review':
+          throw new WorkspaceError(
+            `Could not merge ${id}: ${outcome.detail}`,
+            'The task stays in review and its worktree is kept. Fix it in the worktree (or reject the task), then approve again.',
+          );
+        default:
+          printSuccess(`Approved ${id}`);
       }
-      printSuccess(`Approved ${id}${result.merged ? ' (merged)' : ''}`);
     });
 
   // task reject

@@ -13,9 +13,12 @@ import type { Task, WorkspaceMode } from '../../domain/task.js';
 import type { IProcessManager } from '../process/process-manager.js';
 import { validateWorkspacePath, sanitizeId, ORCHESTRY_DIR } from '../storage/paths.js';
 import { ensureDir } from '../storage/fs-utils.js';
-import type { IWorkspaceManager, PrepareResult } from './interface.js';
+import type { IWorkspaceManager, PrepareResult, SyncResult, TargetHead } from './interface.js';
 import { MergeStrategy, type MergeResult } from './merge-strategy.js';
 import { WorkspaceError } from '../../domain/errors.js';
+
+/** A line starting a conflict's "ours" side or ending its "theirs" side. */
+const CONFLICT_MARKER = /^(?:<{7}|>{7})(?: |\r?$)/m;
 
 export class WorkspaceManager implements IWorkspaceManager {
   private readonly mergeStrategy: MergeStrategy;
@@ -106,16 +109,17 @@ export class WorkspaceManager implements IWorkspaceManager {
     if (status.code !== 0) {
       throw new WorkspaceError(`git status failed in ${workspacePath}: ${status.output}`);
     }
-    if (!status.stdout.trim()) return false;
+    // A merge of main left in progress (resolved by an agent) is concluded even if
+    // the resolution matches HEAD and nothing shows as changed.
+    const merging = await this.isMerging(workspacePath);
+    if (!status.stdout.trim() && !merging) return false;
 
     const add = await this.runGit(['add', '-A', ...pathspec], workspacePath);
     if (add.code !== 0) {
       throw new WorkspaceError(`git add failed in ${workspacePath}: ${add.output}`);
     }
 
-    const identity = await this.runGit(['config', 'user.email'], workspacePath);
-    const identityArgs = identity.stdout.trim() ? [] : ['-c', 'user.name=ORCH', '-c', 'user.email=orch@localhost'];
-    const commit = await this.runGit([...identityArgs, 'commit', '-m', message], workspacePath);
+    const commit = await this.runGit([...await this.identityArgs(workspacePath), 'commit', '-m', message], workspacePath);
     if (commit.code !== 0) {
       throw new WorkspaceError(
         `git commit failed in ${workspacePath}: ${commit.output}`,
@@ -123,6 +127,70 @@ export class WorkspaceManager implements IWorkspaceManager {
       );
     }
     return true;
+  }
+
+  async targetHead(): Promise<TargetHead> {
+    const sha = await this.runGit(['rev-parse', 'HEAD'], this.projectRoot);
+    if (sha.code !== 0 || !sha.stdout.trim()) {
+      throw new WorkspaceError(`git rev-parse HEAD failed in ${this.projectRoot}: ${sha.output}`);
+    }
+    const name = await this.runGit(['rev-parse', '--abbrev-ref', 'HEAD'], this.projectRoot);
+    return { sha: sha.stdout.trim(), name: name.stdout.trim() || 'HEAD' };
+  }
+
+  /**
+   * Merge (not rebase) main into the task branch: the agent's commits stay as
+   * they are and conflicts are resolved once. Merging the task branch back
+   * afterwards is then conflict-free.
+   */
+  async syncWorktree(workspacePath: string, sha: string, message: string): Promise<SyncResult> {
+    const contained = await this.runGit(['merge-base', '--is-ancestor', sha, 'HEAD'], workspacePath);
+    if (contained.code === 0) return { status: 'up_to_date' };
+
+    const merge = await this.runGit(
+      [...await this.identityArgs(workspacePath), 'merge', '--no-edit', '-m', message, sha],
+      workspacePath,
+    );
+    if (merge.code === 0) return { status: 'merged' };
+
+    const unmerged = await this.unmergedPaths(workspacePath);
+    if (unmerged.length > 0) {
+      return { status: 'conflict', files: unmerged, output: merge.output };
+    }
+    // Failed for another reason (hook, local changes in the way): leave the worktree as it was.
+    if (await this.isMerging(workspacePath)) {
+      await this.runGit(['merge', '--abort'], workspacePath);
+    }
+    return { status: 'error', output: merge.output };
+  }
+
+  /**
+   * An unmerged path whose markers are gone counts as resolved (commitAll's
+   * `git add -A` stages it), so an agent that forgot `git add` isn't sent back.
+   */
+  async unresolvedConflicts(workspacePath: string, candidates: string[]): Promise<string[]> {
+    const paths = new Set([...await this.unmergedPaths(workspacePath), ...candidates]);
+    const found: string[] = [];
+    await Promise.all([...paths].map(async (rel) => {
+      const content = await fs.readFile(path.join(workspacePath, rel), 'utf-8').catch(() => '');
+      if (CONFLICT_MARKER.test(content)) found.push(rel);
+    }));
+    return found.sort();
+  }
+
+  private async unmergedPaths(workspacePath: string): Promise<string[]> {
+    const diff = await this.runGit(['diff', '--name-only', '--diff-filter=U'], workspacePath);
+    return diff.stdout.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  }
+
+  private async isMerging(workspacePath: string): Promise<boolean> {
+    return (await this.runGit(['rev-parse', '-q', '--verify', 'MERGE_HEAD'], workspacePath)).code === 0;
+  }
+
+  /** Fallback identity, only when git has no user.email configured. */
+  private async identityArgs(cwd: string): Promise<string[]> {
+    const identity = await this.runGit(['config', 'user.email'], cwd);
+    return identity.stdout.trim() ? [] : ['-c', 'user.name=ORCH', '-c', 'user.email=orch@localhost'];
   }
 
   validate(workspacePath: string, projectRoot: string): void {

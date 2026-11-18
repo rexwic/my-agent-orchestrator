@@ -35,6 +35,10 @@ export interface TaskProof {
   agent_summary?: string;
   /** Worktree branch has been merged into the main branch (set on approval). */
   merged?: boolean;
+  /** Commit of the main branch last merged into the task branch (before review). */
+  synced_main?: string;
+  /** Files that conflicted when syncing main; checked for leftover markers before committing. */
+  conflict_files?: string[];
 }
 
 export interface Task {
@@ -59,6 +63,10 @@ export interface Task {
   review_results?: ReviewResult[];
   scope?: string[];
   feedback?: string;
+  /** Approved for merging: ORCH syncs main, re-verifies if main moved, then merges. */
+  approved?: boolean;
+  /** Times ORCH sent the task back to its agent (main merge conflict, or review failing after sync). */
+  send_backs?: number;
   goalId?: string;
   attachments?: string[];
 }

@@ -29,7 +29,15 @@ export interface ReviewGateDeps {
   eventBus: EventBus;
 }
 
-const MERGE_PREFIX = /^MERGE (CONFLICT|ERROR): [\s\S]*?\n\n/;
+/** Status lines ORCH puts in front of an agent summary (one block each, newest first). */
+const STATUS_PREFIX = /^(?:(?:MERGE|SYNC) (?:CONFLICT|ERROR)|REVIEW FAILED|UNRESOLVED CONFLICT|COMMIT ERROR): [\s\S]*?\n\n/;
+
+/** Put `line` in front of a summary, replacing any earlier ORCH status line. */
+export function prefixSummary(summary: string | undefined, line: string): string {
+  let rest = summary ?? '';
+  while (STATUS_PREFIX.test(rest)) rest = rest.replace(STATUS_PREFIX, '');
+  return `${line}\n\n${rest}`.slice(0, 2000);
+}
 
 export class ReviewGate {
   constructor(private readonly deps: ReviewGateDeps) {}
@@ -89,11 +97,10 @@ export class ReviewGate {
   }
 
   private async recordMergeFailure(task: Task, failure: string): Promise<void> {
-    const summary = (task.proof?.agent_summary ?? '').replace(MERGE_PREFIX, '');
     task.proof = {
       ...task.proof,
       files_changed: task.proof?.files_changed ?? [],
-      agent_summary: `${failure}\n\n${summary}`.slice(0, 2000),
+      agent_summary: prefixSummary(task.proof?.agent_summary, failure),
     };
     task.updated_at = new Date().toISOString();
     await this.deps.taskStore.save(task);

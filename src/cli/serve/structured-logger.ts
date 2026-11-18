@@ -140,6 +140,18 @@ export class StructuredLogger {
       case 'quota:resumed':
         return { ts, level: 'info', event: event.type, group: event.group, manual: event.manual };
 
+      case 'task:approved':
+        return { ts, level: 'info', event: event.type, taskId: event.taskId };
+
+      case 'task:synced':
+        return { ts, level: 'info', event: event.type, taskId: event.taskId, target: event.target, sha: event.sha, merged: event.merged };
+
+      case 'task:sent_back':
+        return {
+          ts, level: 'warn', event: event.type, taskId: event.taskId, reason: event.reason,
+          count: event.count, max: event.max, ...(event.files ? { files: event.files } : {}),
+        };
+
       default:
         return null;
     }

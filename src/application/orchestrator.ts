@@ -22,7 +22,7 @@ import {
   resolveFailureStatus,
   calculateRetryDelay,
 } from '../domain/transitions.js';
-import { NoAgentsError, TaskAlreadyRunningError, LockConflictError, WorkspaceError, classifyAdapterError, extractErrorMessage, AdapterErrorKind } from '../domain/errors.js';
+import { NoAgentsError, TaskAlreadyRunningError, LockConflictError, WorkspaceError, InvalidTransitionError, classifyAdapterError, extractErrorMessage, AdapterErrorKind } from '../domain/errors.js';
 import { scopesOverlap, ScopeIndex } from '../domain/scope.js';
 import { acquireLock, releaseLock, touchLock } from '../infrastructure/storage/lock.js';
 import type { ITaskStore, IAgentStore, IRunStore, IStateStore, IContextStore, IGoalStore } from '../infrastructure/storage/interfaces.js';
@@ -38,8 +38,8 @@ import type { EventBus } from './event-bus.js';
 import type { TaskService } from './task-service.js';
 import type { AgentService } from './agent-service.js';
 import type { RunService } from './run-service.js';
-import { ReviewRunner } from './review-runner.js';
 import { ReviewGate } from './review-gate.js';
+import { IntegrationService, type IntegrationOutcome } from './integration-service.js';
 import { QuotaService } from './quota-service.js';
 import { Semaphore } from './semaphore.js';
 import type { RoleService } from './role-service.js';
@@ -80,6 +80,14 @@ export interface OrchestratorDeps {
   projectRoot: string;
   lockPath: string;
 }
+
+/** Result of `approveTask`: `queued` means an orchestrator integrates it in the background. */
+export type ApproveTaskOutcome = IntegrationOutcome | { status: 'queued' };
+
+/** Work left for after the state lock is released when a run succeeds. */
+type PendingCompletion =
+  | { kind: 'integrate'; autoApprove: boolean }
+  | { kind: 'review'; criteria: import('../domain/task.js').ReviewCriterion[]; cwd: string };
 
 export class Orchestrator {
   private intervalId: ReturnType<typeof setInterval> | null = null;
@@ -126,6 +134,10 @@ export class Orchestrator {
   private readonly quota: QuotaService;
   /** Limits concurrent review_criteria runs (review.max_parallel). */
   private readonly reviewSlots: Semaphore;
+  /** Worktree tasks: sync main → review → merge queue, and send-backs. */
+  private readonly integration: IntegrationService;
+  /** Background integrations started by the tick (approved tasks). */
+  private readonly integrations = new Set<Promise<unknown>>();
   /** Problems already reported (invalid role files, dependency cycles) — report each once. */
   private readonly reportedProblems = new Set<string>();
 
@@ -139,6 +151,18 @@ export class Orchestrator {
     this.shellRunner = deps.shellRunner ?? new ShellRunner(deps.processManager);
     this.quota = new QuotaService(deps.quotaStore ?? new MemoryQuotaStore(), deps.eventBus);
     this.reviewSlots = new Semaphore(Math.max(1, Math.floor(deps.config.review?.max_parallel ?? 1)));
+    this.integration = new IntegrationService({
+      taskStore: deps.taskStore,
+      taskService: deps.taskService,
+      workspaceManager: deps.workspaceManager,
+      eventBus: deps.eventBus,
+      reviewGate: this.reviewGate,
+      shellRunner: this.shellRunner,
+      config: deps.config,
+      reviewSlots: this.reviewSlots,
+      withLock: (fn) => this.withStateLock(fn),
+      isStopping: () => this.shuttingDown,
+    });
     this.cachedTaskStore = new CachedTaskStore(deps.taskStore);
     this.cachedAgentStore = new CachedAgentStore(deps.agentStore);
     this.cachedGoalStore = deps.goalStore ? new CachedGoalStore(deps.goalStore) : null;
@@ -492,6 +516,7 @@ export class Orchestrator {
     if (this.shuttingDown) return;
 
     this.tickInProgress = true;
+    let approved: string[] = [];
     try {
       await this.withStateLock(async () => {
         if (this.shuttingDown) return;
@@ -511,6 +536,10 @@ export class Orchestrator {
         const tasks = await this.cachedTaskStore.list();
         const running = Object.keys(this.state!.running).length;
         const queued = tasks.filter((t) => isDispatchable(t.status)).length;
+        // Approved worktree tasks waiting to merge (approved from the CLI, or left over from a restart).
+        approved = tasks
+          .filter((t) => t.status === 'review' && t.approved && t.proof?.branch && !this.integration.isBusy(t.id))
+          .map((t) => t.id);
 
         this.deps.eventBus.emit({
           type: 'orchestrator:tick',
@@ -522,6 +551,67 @@ export class Orchestrator {
       await touchLock(this.deps.lockPath);
     } finally {
       this.tickInProgress = false;
+    }
+    for (const id of approved) this.startIntegration(id);
+  }
+
+  /** Integrate an approved task in the background (outside the state lock). */
+  private startIntegration(taskId: string): void {
+    if (this.shuttingDown || this.integration.isBusy(taskId)) return;
+    const job: Promise<void> = this.integration.process(taskId, { trigger: 'approved' })
+      .then((outcome) => {
+        if (outcome.status === 'done' || outcome.status === 'sent_back') this.scheduleImmediateDispatch();
+      })
+      .catch((err: unknown) => {
+        this.deps.eventBus.emit({
+          type: 'orchestrator:error',
+          error: err instanceof Error ? err.message : String(err),
+          context: `integrate approved task ${taskId}`,
+          fatal: false,
+        });
+      })
+      .finally(() => { this.integrations.delete(job); });
+    this.integrations.add(job);
+  }
+
+  /**
+   * Approve a task in review (CLI `task approve`, TUI).
+   *
+   * Without a worktree it is marked done right away. A worktree task is marked
+   * approved and integrated in order — merge main in, re-review if main moved,
+   * merge back: in the background when this process runs the orchestrator, by
+   * the orchestrator of another process if one is running (`queued`), or
+   * here and now otherwise.
+   */
+  async approveTask(taskId: string): Promise<ApproveTaskOutcome> {
+    const task = await this.deps.taskService.get(taskId);
+    if (task.status !== 'review') {
+      throw new InvalidTransitionError(taskId, task.status, 'done');
+    }
+
+    if (!task.proof?.branch || !task.workspace) {
+      const result = await this.reviewGate.approve(taskId);
+      return result.ok ? { status: 'done' } : { status: 'review', detail: result.detail };
+    }
+
+    task.approved = true;
+    task.updated_at = new Date().toISOString();
+    await this.deps.taskStore.save(task);
+    this.deps.eventBus.emit({ type: 'task:approved', taskId });
+
+    if (this.lockAcquired) {
+      this.startIntegration(taskId);
+      return { status: 'queued' };
+    }
+
+    const lock = await acquireLock(this.deps.lockPath);
+    if (!lock.acquired) return { status: 'queued' }; // the running orchestrator picks it up
+    this.lockAcquired = true;
+    try {
+      return await this.integration.process(taskId, { trigger: 'approved' });
+    } finally {
+      this.lockAcquired = false;
+      await releaseLock(this.deps.lockPath);
     }
   }
 
@@ -1501,23 +1591,30 @@ export class Orchestrator {
     const pending = await this.withStateLock(() => this._handleRunSuccess(taskId, runId, agentId, tokens, resultText, filesChanged));
     if (!pending) return;
 
-    // Review criteria (e.g. a 5-minute mvn test) run OUTSIDE the state lock so ticks,
-    // dispatch and other completions continue meanwhile; review.max_parallel caps them.
-    const passed = await this.reviewSlots.run(() => this.runAutoReview(taskId, pending.criteria, pending.cwd))
-      .catch((err: unknown) => {
-        this.deps.eventBus.emit({
-          type: 'orchestrator:error',
-          error: err instanceof Error ? err.message : String(err),
-          context: `auto-review of task ${taskId}`,
-          fatal: false,
+    // Git syncs and review criteria (e.g. a 5-minute mvn test) run OUTSIDE the state
+    // lock so ticks, dispatch and other completions continue; review.max_parallel caps reviews.
+    let settled: boolean;
+    if (pending.kind === 'integrate') {
+      // Worktree: commit → merge main in → review the merged result → merge queue.
+      const outcome = await this.integration.process(taskId, { trigger: 'completed', autoApprove: pending.autoApprove });
+      settled = outcome.status === 'done' || outcome.status === 'sent_back';
+    } else {
+      const passed = await this.integration.review(taskId, pending.criteria, pending.cwd)
+        .catch((err: unknown) => {
+          this.deps.eventBus.emit({
+            type: 'orchestrator:error',
+            error: err instanceof Error ? err.message : String(err),
+            context: `auto-review of task ${taskId}`,
+            fatal: false,
+          });
+          return false;
         });
-        return false;
-      });
+      settled = passed && !this.shuttingDown;
+      if (settled) await this.withStateLock(() => this.approveReviewed(taskId));
+    }
     const wasSingleTaskRun = this.singleTaskRunIds.delete(taskId);
-    if (!passed || this.shuttingDown) return;
-    await this.withStateLock(() => this.approveReviewed(taskId));
-    // Approval may unblock dependents.
-    if (!wasSingleTaskRun) this.scheduleImmediateDispatch();
+    // Done unblocks dependents; a send-back makes the task dispatchable again.
+    if (settled && !wasSingleTaskRun) this.scheduleImmediateDispatch();
   }
 
   private async _handleRunSuccess(
@@ -1527,7 +1624,7 @@ export class Orchestrator {
     tokens?: import('../domain/run.js').TokenUsage,
     resultText?: string,
     filesChanged?: string[],
-  ): Promise<{ criteria: import('../domain/task.js').ReviewCriterion[]; cwd: string } | undefined> {
+  ): Promise<PendingCompletion | undefined> {
     await this.flushStateLazy();
     this.abortControllers.delete(taskId);
     const state = this.state!;
@@ -1538,28 +1635,17 @@ export class Orchestrator {
     const task = await this.deps.taskStore.get(taskId);
     if (!task) return;
 
-    // Worktree: commit whatever the agent left uncommitted. Otherwise the branch
-    // merged on approval has no new commits and cleanup() would delete the work.
-    let commitError: string | undefined;
-    if (task.proof?.branch && task.workspace) {
-      try {
-        await this.deps.workspaceManager.commitAll(task.workspace, `orch: ${task.title} (${task.id})`);
-      } catch (err) {
-        commitError = err instanceof Error ? err.message : String(err);
-      }
-    }
-
-    // If adapter didn't report files, try git diff on the worktree branch
-    let effectiveFilesChanged = filesChanged;
-    if ((!effectiveFilesChanged || effectiveFilesChanged.length === 0) && task.proof?.branch) {
-      effectiveFilesChanged = await this.deps.workspaceManager.getChangedFiles(task.proof.branch);
-    }
+    // Worktree tasks are committed, synced with main and reviewed by the
+    // IntegrationService after the lock is released (files_changed is filled in
+    // there from the committed branch if the adapter reported none).
+    const isWorktree = Boolean(task.proof?.branch && task.workspace);
 
     // Save proof of work (agent summary + files changed); clear stale feedback
     task.proof = {
       ...task.proof,
       agent_summary: resultText?.slice(0, 2000) ?? task.proof?.agent_summary,
-      files_changed: effectiveFilesChanged?.length ? effectiveFilesChanged : (task.proof?.files_changed ?? []),
+      // Worktree: recomputed from the branch after committing (stale after a send-back).
+      files_changed: filesChanged?.length ? filesChanged : (isWorktree ? [] : (task.proof?.files_changed ?? [])),
     };
     delete task.feedback;
     await this.deps.taskStore.save(task);
@@ -1619,12 +1705,6 @@ export class Orchestrator {
         state.stats.total_tokens.input + state.stats.total_tokens.output + state.stats.total_tokens.reasoning;
     }
 
-    // Work stays on its worktree branch until approved — merging happens in ReviewGate.
-    if (commitError) {
-      await this.forceTaskToReview(task, agentId, `COMMIT ERROR: ${commitError}`);
-      return;
-    }
-
     // Update task status — force-write via store if service validation fails
     try {
       await this.deps.taskService.updateStatus(taskId, newStatus);
@@ -1659,15 +1739,17 @@ export class Orchestrator {
       await this.deps.agentStore.save(agentAfter);
     }
 
-    // Review gate. With review_criteria, passing them approves the task and failing
-    // keeps it in review regardless of approval_policy (no force-approve). Without
-    // criteria, an auto policy approves immediately; otherwise a human approves.
-    // Approval merges the worktree branch; dependents unblock only once it is done.
-    // Criteria run after the lock is released (see handleRunSuccess).
-    let pendingReview: { criteria: import('../domain/task.js').ReviewCriterion[]; cwd: string } | undefined;
+    // Review gate. With review_criteria, passing them approves the task (failing
+    // never force-approves). Without criteria, an auto policy approves; otherwise a
+    // human approves. Approval merges; dependents unblock only once it is done.
+    // Worktree tasks first get main merged in (IntegrationService). Git and review
+    // work runs after the lock is released (see handleRunSuccess).
+    let pendingReview: PendingCompletion | undefined;
     if (newStatus === 'review') {
-      if (task.review_criteria?.length) {
-        pendingReview = { criteria: task.review_criteria, cwd: task.workspace ?? this.deps.projectRoot };
+      if (isWorktree) {
+        pendingReview = { kind: 'integrate', autoApprove };
+      } else if (task.review_criteria?.length) {
+        pendingReview = { kind: 'review', criteria: task.review_criteria, cwd: task.workspace ?? this.deps.projectRoot };
       } else if (autoApprove) {
         await this.approveReviewed(taskId);
       }
@@ -1848,41 +1930,6 @@ export class Orchestrator {
     }
   }
 
-  /**
-   * Run automatic review criteria on a task in 'review' status, in its workspace
-   * (the worktree for worktree tasks — not yet merged). Saves the results on the
-   * task and returns whether all criteria passed. Never changes the status.
-   */
-  private async runAutoReview(
-    taskId: string,
-    criteria: import('../domain/task.js').ReviewCriterion[],
-    cwd: string,
-  ): Promise<boolean> {
-    const runner = new ReviewRunner({ cwd, shell: this.shellRunner, review: this.deps.config.review });
-    const results = await runner.runAll(criteria);
-    const allPassed = ReviewRunner.allPassed(results);
-
-    const task = await this.deps.taskStore.get(taskId);
-    if (!task) return false;
-
-    task.review_results = results;
-    task.proof = {
-      ...task.proof,
-      test_results: ReviewRunner.formatReport(results),
-      files_changed: task.proof?.files_changed ?? [],
-    };
-    await this.deps.taskStore.save(task);
-
-    this.deps.eventBus.emit({
-      type: 'task:auto_reviewed',
-      taskId,
-      passed: allPassed,
-      results,
-    });
-
-    return allPassed;
-  }
-
   /** Approve a reviewed task (merge + done). On merge failure it stays in review. */
   private async approveReviewed(taskId: string): Promise<void> {
     try {
@@ -1895,37 +1942,6 @@ export class Orchestrator {
         fatal: false,
       });
     }
-  }
-
-  /**
-   * Force a task to 'review' status with a summary prefix.
-   * Used when committing the agent's worktree changes fails (e.g. a commit hook rejects them).
-   */
-  private async forceTaskToReview(
-    task: import('../domain/task.js').Task,
-    agentId: string,
-    summaryPrefix: string,
-  ): Promise<void> {
-    task.proof = {
-      ...task.proof,
-      agent_summary: `${summaryPrefix}\n\n${task.proof?.agent_summary ?? ''}`.slice(0, 2000),
-      files_changed: task.proof?.files_changed ?? [],
-    };
-    task.status = 'review';
-    task.updated_at = new Date().toISOString();
-    await this.deps.taskStore.save(task);
-    await this.deps.agentService.setStatus(agentId, 'idle').catch((err) => {
-      this.deps.eventBus.emit({ type: 'orchestrator:error', error: err instanceof Error ? err.message : String(err), context: `forceTaskToReview setStatus idle for agent ${agentId}`, fatal: false });
-    });
-
-    // Clear current_task — agent is now idle
-    const agentAfter = await this.deps.agentStore.get(agentId);
-    if (agentAfter) {
-      agentAfter.current_task = undefined;
-      await this.deps.agentStore.save(agentAfter);
-    }
-
-    await this.saveState();
   }
 
   private unclaim(taskId: string): void {

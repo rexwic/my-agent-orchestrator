@@ -26,8 +26,9 @@ export { templateToAgentInput, isMcpSkill } from './application/agent-factory.js
 export { TaskService } from './application/task-service.js';
 export { AgentService } from './application/agent-service.js';
 export { RunService } from './application/run-service.js';
-export { Orchestrator } from './application/orchestrator.js';
+export { Orchestrator, type ApproveTaskOutcome } from './application/orchestrator.js';
 export { ReviewGate } from './application/review-gate.js';
+export { IntegrationService, buildSendBackFeedback, type IntegrationOutcome, type IntegrationTrigger } from './application/integration-service.js';
 export { QuotaService } from './application/quota-service.js';
 export { RoleService } from './application/role-service.js';
 export type { RoleSyncResult } from './application/role-service.js';

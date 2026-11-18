@@ -24,6 +24,9 @@ export type OrchestratorEvent =
   | { type: 'quota:resumed'; group: string; manual: boolean }
   | { type: 'role:synced'; created: string[]; updated: string[]; removed: string[] }
   | { type: 'task:dependency_cycle'; taskIds: string[] }
+  | { type: 'task:approved'; taskId: string }
+  | { type: 'task:synced'; taskId: string; target: string; sha: string; merged: boolean }
+  | { type: 'task:sent_back'; taskId: string; reason: 'conflict' | 'review'; count: number; max: number; files?: string[] }
   | { type: 'run:retry'; runId: string; attempt: number; delay_ms: number }
   | { type: 'orchestrator:tick'; running: number; queued: number }
   | { type: 'orchestrator:stall_detected'; runId: string }
