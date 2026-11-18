@@ -7,6 +7,12 @@ vi.mock('node:child_process', () => ({
   execFile: vi.fn(),
 }));
 
+// Command resolution depends on the host PATH on Windows (npm → node npm-cli.js);
+// keep it the identity so assertions are host-independent.
+vi.mock('../../../src/infrastructure/process/resolve-command.js', () => ({
+  resolveCommand: (command: string, args: string[]) => ({ command, args, shell: false }),
+}));
+
 import { execFile } from 'node:child_process';
 const mockExecFile = vi.mocked(execFile);
 

@@ -25,7 +25,7 @@ export class MergeStrategy {
       const { process: proc } = this.processManager.spawn(
         'git',
         ['merge', '--no-ff', branch, '-m', `Merge ${branch}`],
-        { cwd: this.projectRoot },
+        { cwd: this.projectRoot, foreground: true },
       );
 
       let output = '';
@@ -56,8 +56,10 @@ export class MergeStrategy {
           const { process: abortProc } = this.processManager.spawn(
             'git',
             ['merge', '--abort'],
-            { cwd: this.projectRoot },
+            { cwd: this.projectRoot, foreground: true },
           );
+          abortProc.stdout?.on('data', () => {});
+          abortProc.stderr?.on('data', () => {});
           abortProc.on('close', () => {
             resolve({ success: false, conflictInfo: trimmedOutput });
           });

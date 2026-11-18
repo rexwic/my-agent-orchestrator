@@ -13,16 +13,14 @@ import type { IAgentAdapter, AdapterTestResult, ExecuteParams, AgentEvent, Execu
 import type { IProcessManager } from '../process/process-manager.js';
 import { extractTokens, createStreamingEvents, buildFullPrompt } from './utils.js';
 import { classifyAdapterError, AdapterErrorKind } from '../../domain/errors.js';
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
+import { execCommand } from '../process/resolve-command.js';
 
-const execFileAsync = promisify(execFile);
 
 /** Try multiple command names and return the first that works */
 async function findCommand(): Promise<{ command: string; version: string } | null> {
   for (const cmd of ['cursor-agent', 'agent']) {
     try {
-      const { stdout } = await execFileAsync(cmd, ['--version']);
+      const { stdout } = await execCommand(cmd, ['--version']);
       return { command: cmd, version: stdout.trim() };
     } catch {
       // try next

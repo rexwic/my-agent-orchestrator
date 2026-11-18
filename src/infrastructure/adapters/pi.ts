@@ -13,7 +13,7 @@ import type { Readable } from 'node:stream';
 import { createTokenUsage, type TokenUsage } from '../../domain/run.js';
 import { classifyAdapterError } from '../../domain/errors.js';
 import { appendStderrTail, createStderrTailCapture } from './utils.js';
-import { execFile } from 'node:child_process';
+import { execCommand } from '../process/resolve-command.js';
 
 export class PiAdapter implements IAgentAdapter {
   readonly kind = 'pi';
@@ -22,12 +22,7 @@ export class PiAdapter implements IAgentAdapter {
 
   async test(): Promise<AdapterTestResult> {
     try {
-      const stdout = await new Promise<string>((resolve, reject) => {
-        execFile('pi', ['--version'], (err, out) => {
-          if (err) reject(err);
-          else resolve(out);
-        });
-      });
+      const { stdout } = await execCommand('pi', ['--version']);
       return { ok: true, version: stdout.trim() };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);

@@ -170,7 +170,12 @@ export class WorkspaceManager implements IWorkspaceManager {
   /** Spawn a command and return exit code (non-throwing). */
   private async spawnAndWait(cmd: string, args: string[]): Promise<number> {
     try {
-      const { process: proc } = this.processManager.spawn(cmd, args, { cwd: this.projectRoot });
+      // foreground: keep the event loop alive until git exits (an unref'd child with
+      // unread pipes lets Node exit mid-await on Windows).
+      const { process: proc } = this.processManager.spawn(cmd, args, { cwd: this.projectRoot, foreground: true });
+      // Drain output so a chatty command can't block on a full pipe.
+      proc.stdout?.on('data', () => {});
+      proc.stderr?.on('data', () => {});
       return new Promise<number>((resolve) => {
         proc.on('close', (code) => resolve(code ?? 1));
         proc.on('error', () => resolve(1));
@@ -183,9 +188,10 @@ export class WorkspaceManager implements IWorkspaceManager {
   /** Spawn a command and capture stdout + exit code. */
   private async spawnAndCapture(cmd: string, args: string[]): Promise<{ stdout: string; code: number }> {
     try {
-      const { process: proc } = this.processManager.spawn(cmd, args, { cwd: this.projectRoot });
+      const { process: proc } = this.processManager.spawn(cmd, args, { cwd: this.projectRoot, foreground: true });
       let stdout = '';
       proc.stdout?.on('data', (chunk: Buffer) => { stdout += chunk.toString(); });
+      proc.stderr?.on('data', () => {});
       const code = await new Promise<number>((resolve) => {
         proc.on('close', (c) => resolve(c ?? 1));
         proc.on('error', () => resolve(1));

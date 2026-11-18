@@ -12,10 +12,8 @@ import { buildFullPrompt } from './utils.js';
 import { readLines } from '../process/process-manager.js';
 import { EventBuffer } from './event-buffer.js';
 import { classifyAdapterError, AdapterErrorKind } from '../../domain/errors.js';
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
+import { execCommand } from '../process/resolve-command.js';
 
-const execFileAsync = promisify(execFile);
 
 export class ShellAdapter implements IAgentAdapter {
   readonly kind = 'shell';
@@ -24,7 +22,7 @@ export class ShellAdapter implements IAgentAdapter {
 
   async test(): Promise<AdapterTestResult> {
     try {
-      const { stdout } = await execFileAsync('bash', ['--version']);
+      const { stdout } = await execCommand('bash', ['--version']);
       const version = stdout.split('\n')[0]?.trim() ?? 'unknown';
       return { ok: true, version };
     } catch {

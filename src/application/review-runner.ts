@@ -10,6 +10,7 @@
  */
 
 import { execFile } from 'node:child_process';
+import { resolveCommand } from '../infrastructure/process/resolve-command.js';
 import type { ReviewCriterion, ReviewResult } from '../domain/task.js';
 
 const CRITERION_COMMANDS: Record<ReviewCriterion, { cmd: string; args: string[] }> = {
@@ -79,10 +80,17 @@ export class ReviewRunner {
     const { cmd, args } = CRITERION_COMMANDS[criterion];
 
     return new Promise((resolve) => {
+      let resolved;
+      try {
+        resolved = resolveCommand(cmd, args);
+      } catch (err) {
+        resolve({ criterion, passed: false, output: err instanceof Error ? err.message : String(err) });
+        return;
+      }
       execFile(
-        cmd,
-        args,
-        { cwd: this.cwd, timeout: this.timeoutMs, maxBuffer: 1024 * 1024 },
+        resolved.command,
+        resolved.args,
+        { cwd: this.cwd, timeout: this.timeoutMs, maxBuffer: 1024 * 1024, shell: resolved.shell, windowsHide: true },
         (error, stdout, stderr) => {
           const output = (stdout + '\n' + stderr).trim();
           resolve({

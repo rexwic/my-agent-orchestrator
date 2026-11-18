@@ -6,6 +6,7 @@
 
 import type { Command } from 'commander';
 import { execFile } from 'node:child_process';
+import { resolveCommand } from '../../infrastructure/process/resolve-command.js';
 import { checkForUpdateNow } from '../update-check.js';
 import { amber, dim } from '../output.js';
 import chalk from 'chalk';
@@ -14,10 +15,11 @@ const PACKAGE_NAME = '@oxgeneral/orch';
 
 function runInstall(): Promise<{ code: number; output: string }> {
   return new Promise((resolve) => {
+    const npm = resolveCommand('npm', ['install', '-g', `${PACKAGE_NAME}@latest`]);
     const child = execFile(
-      'npm',
-      ['install', '-g', `${PACKAGE_NAME}@latest`],
-      { timeout: 60_000 },
+      npm.command,
+      npm.args,
+      { timeout: 60_000, shell: npm.shell, windowsHide: true },
       (err, stdout, stderr) => {
         const output = (stdout ?? '') + (stderr ?? '');
         resolve({ code: err ? 1 : 0, output });

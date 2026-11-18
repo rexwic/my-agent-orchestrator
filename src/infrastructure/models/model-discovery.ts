@@ -6,7 +6,7 @@
  * Fallbacks deliberately avoid pinned model versions so they cannot go stale.
  */
 
-import { spawn } from 'node:child_process';
+import { spawnCommand } from '../process/resolve-command.js';
 import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -133,7 +133,7 @@ export async function loadModelCatalog(
 
 async function run(command: string, args: string[]): Promise<CommandOutput> {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawnCommand(command, args, { stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '';
     let stderr = '';
     let settled = false;
@@ -152,10 +152,10 @@ async function run(command: string, args: string[]): Promise<CommandOutput> {
       finish(new Error(`${command} ${args.join(' ')} timed out`));
     }, DISCOVERY_TIMEOUT_MS);
 
-    child.stdout.setEncoding('utf8');
-    child.stderr.setEncoding('utf8');
-    child.stdout.on('data', (chunk) => { stdout += chunk; });
-    child.stderr.on('data', (chunk) => { stderr += chunk; });
+    child.stdout?.setEncoding('utf8');
+    child.stderr?.setEncoding('utf8');
+    child.stdout?.on('data', (chunk) => { stdout += chunk; });
+    child.stderr?.on('data', (chunk) => { stderr += chunk; });
     child.on('error', finish);
     child.on('close', (code, signal) => {
       if (code === 0) {

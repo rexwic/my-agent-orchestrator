@@ -6,20 +6,50 @@
 
 import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
 import type { Readable } from 'node:stream';
+import { resolveCommand, type ResolvedCommand } from './resolve-command.js';
 
 export interface SpawnResult {
   process: ChildProcess;
   pid: number;
 }
 
+export interface ManagedSpawnOptions extends SpawnOptions {
+  /**
+   * Short-lived command whose result the caller awaits (git, etc.).
+   * Foreground processes are neither detached nor unref'd, so they keep the
+   * event loop alive until they exit. Default: false (long-lived agent process).
+   */
+  foreground?: boolean;
+}
+
 export interface IProcessManager {
   isAlive(pid: number): boolean;
   kill(pid: number, signal?: NodeJS.Signals): void;
   killWithGrace(pid: number, graceMs?: number): Promise<void>;
-  spawn(command: string, args: string[], options?: SpawnOptions): SpawnResult;
+  spawn(command: string, args: string[], options?: ManagedSpawnOptions): SpawnResult;
+}
+
+export interface ProcessManagerOptions {
+  platform?: NodeJS.Platform;
+  resolve?: (command: string, args: string[]) => ResolvedCommand;
+  /**
+   * Windows process-tree termination (taskkill /T /F). Resolves to true on success.
+   * Non-blocking: taskkill takes ~250 ms per call.
+   */
+  killTree?: (pid: number) => Promise<boolean>;
 }
 
 export class ProcessManager implements IProcessManager {
+  private readonly platform: NodeJS.Platform;
+  private readonly resolve: (command: string, args: string[]) => ResolvedCommand;
+  private readonly killTree: (pid: number) => Promise<boolean>;
+
+  constructor(options: ProcessManagerOptions = {}) {
+    this.platform = options.platform ?? process.platform;
+    this.resolve = options.resolve ?? ((command, args) => resolveCommand(command, args));
+    this.killTree = options.killTree ?? taskkillTree;
+  }
+
   isAlive(pid: number): boolean {
     try {
       process.kill(pid, 0);
@@ -32,6 +62,14 @@ export class ProcessManager implements IProcessManager {
   }
 
   kill(pid: number, signal: NodeJS.Signals = 'SIGTERM'): void {
+    if (this.platform === 'win32') {
+      // Windows has no process groups: terminate just this process (TerminateProcess,
+      // synchronous). killWithGrace() — the path agents are stopped through — also
+      // terminates descendants via taskkill /T.
+      this.killDirect(pid, signal);
+      return;
+    }
+
     // Kill entire process group (-pid) to clean up child processes (vitest, playwright, etc.)
     try {
       process.kill(-pid, signal);
@@ -48,7 +86,12 @@ export class ProcessManager implements IProcessManager {
   async killWithGrace(pid: number, graceMs: number = 10_000): Promise<void> {
     if (!this.isAlive(pid)) return;
 
-    this.kill(pid, 'SIGTERM');
+    if (this.platform === 'win32') {
+      // No graceful signal on Windows — terminate the whole tree without blocking the event loop.
+      if (!(await this.killTree(pid))) this.killDirect(pid, 'SIGTERM');
+    } else {
+      this.kill(pid, 'SIGTERM');
+    }
 
     const deadline = Date.now() + graceMs;
 
@@ -61,23 +104,53 @@ export class ProcessManager implements IProcessManager {
     this.kill(pid, 'SIGKILL');
   }
 
-  spawn(command: string, args: string[], options?: SpawnOptions): SpawnResult {
-    const proc = spawn(command, args, {
+  private killDirect(pid: number, signal: NodeJS.Signals): void {
+    try {
+      process.kill(pid, signal);
+    } catch {
+      // Process already dead
+    }
+  }
+
+  spawn(command: string, args: string[], options?: ManagedSpawnOptions): SpawnResult {
+    const { foreground = false, ...spawnOptions } = options ?? {};
+    const resolved = this.resolve(command, args);
+
+    const proc = spawn(resolved.command, resolved.args, {
       stdio: ['ignore', 'pipe', 'pipe'],
-      detached: true, // Create new process group so killWithGrace(-pid) kills all children
-      ...options,
+      // POSIX: new process group so killWithGrace(-pid) kills all children.
+      // Windows: detached would open a separate console window; kill() uses taskkill /T instead.
+      detached: !foreground && this.platform !== 'win32',
+      windowsHide: true,
+      ...spawnOptions,
+      ...(resolved.shell ? { shell: true } : {}),
     });
 
     if (!proc.pid) {
       throw new Error(`Failed to spawn process: ${command}`);
     }
 
-    // Allow parent to exit without waiting for this child.
-    // Pipes (stdout/stderr) still hold refs while being read — that's intentional.
-    proc.unref();
+    if (!foreground) {
+      // Allow parent to exit without waiting for this child.
+      // Pipes (stdout/stderr) still hold refs while being read — that's intentional.
+      proc.unref();
+    }
 
     return { process: proc, pid: proc.pid };
   }
+}
+
+/** Terminate a Windows process tree. taskkill exit 128 = process not found (already gone). */
+function taskkillTree(pid: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    try {
+      const child = spawn('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
+      child.once('error', () => resolve(false));
+      child.once('exit', (code) => resolve(code === 0 || code === 128));
+    } catch {
+      resolve(false);
+    }
+  });
 }
 
 /**

@@ -6,12 +6,10 @@
 
 import type { AdapterRegistry } from '../infrastructure/adapters/registry.js';
 import type { IProcessManager } from '../infrastructure/process/process-manager.js';
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
+import { execCommand } from '../infrastructure/process/resolve-command.js';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
-const execFileAsync = promisify(execFile);
 
 export interface DoctorCheck {
   name: string;
@@ -86,7 +84,7 @@ export class DoctorService {
     name: string,
   ): Promise<DoctorCheck> {
     try {
-      const { stdout } = await execFileAsync(command, args);
+      const { stdout } = await execCommand(command, args);
       return { name, status: 'ok', detail: stdout.trim() };
     } catch {
       return { name, status: 'fail', detail: `${command}: command not found` };
@@ -117,7 +115,7 @@ export class DoctorService {
 
   private async checkGitRepo(): Promise<DoctorCheck> {
     try {
-      await execFileAsync('git', ['rev-parse', '--is-inside-work-tree'], { cwd: this.cwd });
+      await execCommand('git', ['rev-parse', '--is-inside-work-tree'], { cwd: this.cwd });
       return { name: 'git repo', status: 'ok', detail: 'git repository detected' };
     } catch {
       return {

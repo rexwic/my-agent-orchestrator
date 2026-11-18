@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { appendJsonl, readJsonl, writeJson, readJson } from '../../../src/infrastructure/storage/fs-utils.js';
+import { appendJsonl, readJsonl, writeJson, readJson, closeAllAppendHandles } from '../../../src/infrastructure/storage/fs-utils.js';
 import { StateStore } from '../../../src/infrastructure/storage/state-store.js';
 import { RunStore } from '../../../src/infrastructure/storage/run-store.js';
 import { Paths } from '../../../src/infrastructure/storage/paths.js';
@@ -20,7 +20,9 @@ describe('Concurrent access', () => {
   });
 
   afterEach(async () => {
-    await fs.rm(tmpDir, { recursive: true, force: true });
+    // Windows cannot delete a directory while an append handle is still open in it.
+    await closeAllAppendHandles();
+    await fs.rm(tmpDir, { recursive: true, force: true, maxRetries: 5 });
   });
 
   describe('parallel appendJsonl', () => {

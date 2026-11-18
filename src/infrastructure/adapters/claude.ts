@@ -9,10 +9,8 @@ import type { IAgentAdapter, AdapterTestResult, ExecuteParams, AgentEvent, Execu
 import type { IProcessManager } from '../process/process-manager.js';
 import { extractTokens, createStreamingEvents } from './utils.js';
 import { classifyAdapterError, AdapterErrorKind } from '../../domain/errors.js';
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
+import { execCommand } from '../process/resolve-command.js';
 
-const execFileAsync = promisify(execFile);
 
 export class ClaudeAdapter implements IAgentAdapter {
   readonly kind = 'claude';
@@ -21,7 +19,7 @@ export class ClaudeAdapter implements IAgentAdapter {
 
   async test(): Promise<AdapterTestResult> {
     try {
-      const { stdout } = await execFileAsync('claude', ['--version']);
+      const { stdout } = await execCommand('claude', ['--version']);
       return { ok: true, version: stdout.trim() };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);

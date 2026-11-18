@@ -61,7 +61,7 @@ describe('MergeStrategy', () => {
       expect(pm.spawn).toHaveBeenCalledWith(
         'git',
         ['merge', '--no-ff', 'feature-branch', '-m', 'Merge feature-branch'],
-        { cwd: '/project' },
+        { cwd: '/project', foreground: true },
       );
     });
 

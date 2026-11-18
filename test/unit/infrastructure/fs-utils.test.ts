@@ -14,6 +14,8 @@ import {
   clearEnsuredDirs,
   pathExists,
   listFiles,
+  renameWithRetry,
+  closeAllAppendHandles,
 } from '../../../src/infrastructure/storage/fs-utils.js';
 
 let tmpDir: string;
@@ -23,7 +25,51 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  await fs.rm(tmpDir, { recursive: true, force: true });
+  // Windows cannot delete a directory while an append handle is still open in it.
+  await closeAllAppendHandles();
+  await fs.rm(tmpDir, { recursive: true, force: true, maxRetries: 5 });
+});
+
+describe('renameWithRetry', () => {
+  function sharingViolation(code: string): NodeJS.ErrnoException {
+    return Object.assign(new Error(`${code}: operation not permitted, rename`), { code });
+  }
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it.each(['EPERM', 'EBUSY', 'EACCES'])('retries transient %s on Windows until rename succeeds', async (code) => {
+    const rename = vi.spyOn(fs, 'rename')
+      .mockRejectedValueOnce(sharingViolation(code))
+      .mockRejectedValueOnce(sharingViolation(code))
+      .mockResolvedValueOnce(undefined);
+
+    await renameWithRetry('a.tmp', 'a', 'win32');
+
+    expect(rename).toHaveBeenCalledTimes(3);
+  });
+
+  it('gives up after the retry budget on Windows', async () => {
+    const rename = vi.spyOn(fs, 'rename').mockRejectedValue(sharingViolation('EPERM'));
+
+    await expect(renameWithRetry('a.tmp', 'a', 'win32')).rejects.toMatchObject({ code: 'EPERM' });
+    expect(rename).toHaveBeenCalledTimes(11);
+  });
+
+  it('does not retry on POSIX', async () => {
+    const rename = vi.spyOn(fs, 'rename').mockRejectedValue(sharingViolation('EPERM'));
+
+    await expect(renameWithRetry('a.tmp', 'a', 'linux')).rejects.toMatchObject({ code: 'EPERM' });
+    expect(rename).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not retry non-transient errors on Windows', async () => {
+    const rename = vi.spyOn(fs, 'rename').mockRejectedValue(sharingViolation('ENOENT'));
+
+    await expect(renameWithRetry('a.tmp', 'a', 'win32')).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(rename).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('atomicWrite', () => {

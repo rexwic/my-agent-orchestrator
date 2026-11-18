@@ -72,12 +72,12 @@ describe('Paths — attachments', () => {
   const paths = new Paths('/project');
 
   it('attachmentsDir returns .orchestry/attachments', () => {
-    expect(paths.attachmentsDir).toBe('/project/.orchestry/attachments');
+    expect(paths.attachmentsDir).toBe(path.join('/project', '.orchestry', 'attachments'));
   });
 
   it('taskAttachmentsDir returns attachments/{id}', () => {
     expect(paths.taskAttachmentsDir('tsk_abc123')).toBe(
-      '/project/.orchestry/attachments/tsk_abc123',
+      path.join('/project', '.orchestry', 'attachments', 'tsk_abc123'),
     );
   });
 
@@ -267,7 +267,7 @@ describe('TaskService — getAttachmentPath', () => {
     const service = new TaskService(taskStore, eventBus, DEFAULT_CONFIG, paths);
 
     const result = service.getAttachmentPath('tsk_abc', 'notes.txt');
-    expect(result).toBe('/project/.orchestry/attachments/tsk_abc/notes.txt');
+    expect(result).toBe(path.join('/project', '.orchestry', 'attachments', 'tsk_abc', 'notes.txt'));
   });
 
   it('throws when paths not configured', () => {

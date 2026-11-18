@@ -178,7 +178,8 @@ describe('WorkspaceManager', () => {
       expect(processManager.spawn).toHaveBeenCalledWith(
         'git',
         expect.arrayContaining(['worktree', 'add']),
-        expect.objectContaining({ cwd: tmpDir }),
+        // foreground: short-lived git must keep the event loop alive while awaited
+        expect.objectContaining({ cwd: tmpDir, foreground: true }),
       );
 
       // Branch should be sanitized (skip rev-parse call)

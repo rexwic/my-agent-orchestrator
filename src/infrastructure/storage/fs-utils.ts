@@ -23,11 +23,41 @@ export async function atomicWrite(filePath: string, content: string): Promise<vo
 
   try {
     await fs.writeFile(tmpPath, content, 'utf-8');
-    await fs.rename(tmpPath, filePath);
+    await renameWithRetry(tmpPath, filePath);
   } catch (err) {
     // Clean up temp file on failure
     await fs.unlink(tmpPath).catch(() => {});
     throw err;
+  }
+}
+
+/** Errors Windows returns when the rename target is momentarily open by another reader/writer. */
+const TRANSIENT_RENAME_CODES: ReadonlySet<string> = new Set(['EPERM', 'EBUSY', 'EACCES']);
+const RENAME_MAX_RETRIES = 10;
+
+/**
+ * fs.rename with retry for Windows sharing violations.
+ *
+ * On Windows, replacing a file that another process (TUI, CLI) has open for
+ * reading fails with EPERM/EBUSY/EACCES instead of succeeding atomically as on
+ * POSIX. The lock is short-lived, so retry with capped backoff (~750 ms total),
+ * the same approach as graceful-fs. Other platforms fail immediately.
+ */
+export async function renameWithRetry(
+  from: string,
+  to: string,
+  platform: NodeJS.Platform = process.platform,
+): Promise<void> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await fs.rename(from, to);
+      return;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      const retryable = platform === 'win32' && code !== undefined && TRANSIENT_RENAME_CODES.has(code);
+      if (!retryable || attempt >= RENAME_MAX_RETRIES) throw err;
+      await new Promise((r) => setTimeout(r, Math.min(10 * 2 ** attempt, 100)));
+    }
   }
 }
 
@@ -182,34 +212,34 @@ async function getOrCreateHandle(filePath: string): Promise<FileHandle> {
   return opening;
 }
 
-function evictHandle(filePath: string): void {
+function evictHandle(filePath: string): Promise<void> {
   const entry = appendHandles.get(filePath);
-  if (!entry) return;
+  if (!entry) return Promise.resolve();
   appendHandles.delete(filePath);
   clearTimeout(entry.idleTimer);
-  entry.handle.close().catch(() => {});
+  return entry.handle.close().catch(() => {});
 }
 
 /**
  * Explicitly close the append handle for a file path.
  * Call this when a run completes to reclaim the FD immediately.
+ * The returned promise resolves once the FD is closed (on Windows an open
+ * handle prevents deleting the file or its directory).
  */
-export function closeAppendHandle(filePath: string): void {
-  evictHandle(filePath);
+export function closeAppendHandle(filePath: string): Promise<void> {
+  return evictHandle(filePath);
 }
 
 /**
  * Close all cached append handles.
  * Call on process exit and in test teardown.
  */
-export function closeAllAppendHandles(): void {
-  for (const filePath of [...appendHandles.keys()]) {
-    evictHandle(filePath);
-  }
+export function closeAllAppendHandles(): Promise<void> {
+  return Promise.all([...appendHandles.keys()].map(evictHandle)).then(() => {});
 }
 
 // Auto-cleanup on process exit
-process.once('exit', closeAllAppendHandles);
+process.once('exit', () => { void closeAllAppendHandles(); });
 
 /** Max file size for full readJsonl (50 MB). Larger files use tail read. */
 const MAX_JSONL_READ_SIZE = 50 * 1024 * 1024;

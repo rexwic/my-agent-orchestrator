@@ -11,10 +11,8 @@ import type { IAgentAdapter, AdapterTestResult, ExecuteParams, AgentEvent, Execu
 import type { IProcessManager } from '../process/process-manager.js';
 import { readLines } from '../process/process-manager.js';
 import { classifyAdapterError } from '../../domain/errors.js';
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
+import { execCommand } from '../process/resolve-command.js';
 
-const execFileAsync = promisify(execFile);
 const OUTPUT_CHUNK_LEN = 240;
 
 export class GrokAdapter implements IAgentAdapter {
@@ -24,7 +22,7 @@ export class GrokAdapter implements IAgentAdapter {
 
   async test(): Promise<AdapterTestResult> {
     try {
-      const { stdout } = await execFileAsync('grok', ['--version']);
+      const { stdout } = await execCommand('grok', ['--version']);
       return { ok: true, version: stdout.trim() };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);

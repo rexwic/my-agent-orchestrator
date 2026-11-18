@@ -116,10 +116,11 @@ describe('findProjectRoot cache', () => {
   });
 
   it('caches different startDir values independently', () => {
-    const result1 = findProjectRoot('/');
+    const fsRoot = path.parse(process.cwd()).root; // '/' on POSIX, 'C:\' on Windows
+    const result1 = findProjectRoot(fsRoot);
     const result2 = findProjectRoot(process.cwd());
-    // Root dir has no .orchestry, so returns '/'
-    expect(result1).toBe('/');
+    // Root dir has no .orchestry, so returns the root itself
+    expect(result1).toBe(fsRoot);
     // cwd should find project root or return cwd
     expect(typeof result2).toBe('string');
   });

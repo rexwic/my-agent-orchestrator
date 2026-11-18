@@ -10,6 +10,7 @@ import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { execFile } from 'node:child_process';
+import { resolveCommand } from '../infrastructure/process/resolve-command.js';
 
 const PACKAGE_NAME = '@oxgeneral/orch';
 const CACHE_DIR = path.join(os.homedir(), '.orchestry');
@@ -58,7 +59,8 @@ async function writeCache(latest: string): Promise<void> {
 /** Fetch latest version from npm registry via `npm view`. */
 function fetchLatestVersion(): Promise<string | null> {
   return new Promise((resolve) => {
-    const child = execFile('npm', ['view', PACKAGE_NAME, 'version', '--json'], { timeout: 5000 }, (err, stdout) => {
+    const npm = resolveCommand('npm', ['view', PACKAGE_NAME, 'version', '--json']);
+    const child = execFile(npm.command, npm.args, { timeout: 5000, shell: npm.shell, windowsHide: true }, (err, stdout) => {
       if (err) return resolve(null);
       try {
         resolve(JSON.parse(stdout.trim()) as string);
@@ -142,10 +144,11 @@ export function backgroundInstall(version: string): Promise<boolean> {
       // No marker — proceed
     }
 
+    const npm = resolveCommand('npm', ['install', '-g', `${PACKAGE_NAME}@${version}`]);
     const child = execFile(
-      'npm',
-      ['install', '-g', `${PACKAGE_NAME}@${version}`],
-      { timeout: 60_000 },
+      npm.command,
+      npm.args,
+      { timeout: 60_000, shell: npm.shell, windowsHide: true },
       (err) => {
         if (!err) {
           // Write marker so we don't re-install until next check cycle

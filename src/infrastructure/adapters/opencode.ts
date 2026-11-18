@@ -10,10 +10,8 @@ import type { IProcessManager } from '../process/process-manager.js';
 import { createStreamingEvents, buildFullPrompt } from './utils.js';
 import { classifyAdapterError } from '../../domain/errors.js';
 import { createTokenUsage } from '../../domain/run.js';
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
+import { execCommand } from '../process/resolve-command.js';
 
-const execFileAsync = promisify(execFile);
 
 export class OpenCodeAdapter implements IAgentAdapter {
   readonly kind = 'opencode';
@@ -22,7 +20,7 @@ export class OpenCodeAdapter implements IAgentAdapter {
 
   async test(): Promise<AdapterTestResult> {
     try {
-      const { stdout } = await execFileAsync('opencode', ['--version']);
+      const { stdout } = await execCommand('opencode', ['--version']);
       return { ok: true, version: stdout.trim() };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);

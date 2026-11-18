@@ -23,15 +23,9 @@ function spawnSleep(seconds: number): number {
   return result.pid;
 }
 
-afterEach(() => {
-  // Cleanup all tracked processes
-  for (const pid of spawnedPids) {
-    try {
-      manager.kill(pid, 'SIGKILL');
-    } catch {
-      // Already dead — ignore
-    }
-  }
+afterEach(async () => {
+  // Cleanup all tracked processes in parallel (on Windows each kill is a ~250 ms taskkill)
+  await Promise.all(spawnedPids.map((pid) => manager.killWithGrace(pid, 1_000).catch(() => {})));
   spawnedPids.length = 0;
 });
 

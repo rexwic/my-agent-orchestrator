@@ -12,10 +12,8 @@ import type { IProcessManager } from '../process/process-manager.js';
 import { readLines } from '../process/process-manager.js';
 import { buildFullPrompt } from './utils.js';
 import { classifyAdapterError } from '../../domain/errors.js';
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
+import { execCommand } from '../process/resolve-command.js';
 
-const execFileAsync = promisify(execFile);
 
 export class AntigravityAdapter implements IAgentAdapter {
   readonly kind = 'antigravity';
@@ -24,7 +22,7 @@ export class AntigravityAdapter implements IAgentAdapter {
 
   async test(): Promise<AdapterTestResult> {
     try {
-      const { stdout } = await execFileAsync('agy', ['--version']);
+      const { stdout } = await execCommand('agy', ['--version']);
       return { ok: true, version: stdout.trim() };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);

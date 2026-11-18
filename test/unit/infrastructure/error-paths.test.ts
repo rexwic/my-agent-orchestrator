@@ -2,7 +2,11 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { readJson, writeJson, appendJsonl, readJsonl, readJsonlTail, readYaml, writeYaml } from '../../../src/infrastructure/storage/fs-utils.js';
+import { readJson, writeJson, appendJsonl, readJsonl, readJsonlTail, readYaml, writeYaml, closeAllAppendHandles } from '../../../src/infrastructure/storage/fs-utils.js';
+
+// chmod 0o444 on a directory does not make it read-only on Windows (only the file
+// read-only attribute exists), so these permission tests are POSIX-only.
+const isWindows = process.platform === 'win32';
 import { StateStore } from '../../../src/infrastructure/storage/state-store.js';
 import { RunStore } from '../../../src/infrastructure/storage/run-store.js';
 import { Paths } from '../../../src/infrastructure/storage/paths.js';
@@ -18,11 +22,12 @@ describe('Error paths', () => {
   });
 
   afterEach(async () => {
-    await fs.rm(tmpDir, { recursive: true, force: true });
+    await closeAllAppendHandles();
+    await fs.rm(tmpDir, { recursive: true, force: true, maxRetries: 5 });
   });
 
   describe('fs errors on save', () => {
-    it('writeJson throws on read-only directory', async () => {
+    it.skipIf(isWindows)('writeJson throws on read-only directory', async () => {
       const readonlyDir = path.join(tmpDir, 'readonly');
       await fs.mkdir(readonlyDir);
       const filePath = path.join(readonlyDir, 'test.json');
@@ -38,7 +43,7 @@ describe('Error paths', () => {
       }
     });
 
-    it('appendJsonl throws when parent directory is read-only', async () => {
+    it.skipIf(isWindows)('appendJsonl throws when parent directory is read-only', async () => {
       const readonlyDir = path.join(tmpDir, 'readonly-jsonl');
       await fs.mkdir(readonlyDir);
       const filePath = path.join(readonlyDir, 'events.jsonl');
@@ -62,7 +67,7 @@ describe('Error paths', () => {
       expect(result).toEqual({ created: true });
     });
 
-    it('StateStore.write throws when path is unwritable', async () => {
+    it.skipIf(isWindows)('StateStore.write throws when path is unwritable', async () => {
       const orchestryDir = path.join(tmpDir, '.orchestry');
       await fs.mkdir(orchestryDir, { recursive: true });
       const paths = new Paths(tmpDir);

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import path from 'node:path';
 
 const fsUtils = vi.hoisted(() => ({
   readYaml: vi.fn(),
@@ -52,6 +53,6 @@ describe('GlobalConfigStore palette migration', () => {
 
     await new GlobalConfigStore().read();
 
-    expect(fsUtils.readYaml).toHaveBeenCalledWith('/tmp/orch-e2e/global.yml');
+    expect(fsUtils.readYaml).toHaveBeenCalledWith(path.resolve('/tmp/orch-e2e/global.yml'));
   });
 });

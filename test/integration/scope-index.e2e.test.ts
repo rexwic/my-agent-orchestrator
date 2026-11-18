@@ -16,9 +16,13 @@ import { ConfigStore } from "../../src/infrastructure/storage/config-store.js";
 import { closeAllAppendHandles } from "../../src/infrastructure/storage/fs-utils.js";
 import { Paths } from "../../src/infrastructure/storage/paths.js";
 
+// The shell adapter runs `bash -lc`; a login shell takes ~1s to start on Windows
+// (Git Bash), which under a loaded parallel test run exceeds the POSIX budget.
+const WAIT_TIMEOUT_MS = process.platform === "win32" ? 40_000 : 10_000;
+
 async function waitUntil(
   predicate: () => Promise<boolean>,
-  timeoutMs = 10_000,
+  timeoutMs = WAIT_TIMEOUT_MS,
 ): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -55,12 +59,12 @@ describe("scope scheduling — real runtime e2e", () => {
   afterEach(async () => {
     await container?.orchestrator.stop().catch(() => {});
     container?.eventBus.clear();
-    closeAllAppendHandles();
-    await fs.rm(projectRoot, { recursive: true, force: true });
+    await closeAllAppendHandles();
+    await fs.rm(projectRoot, { recursive: true, force: true, maxRetries: 5 });
     container = undefined;
   });
 
-  it("serializes overlapping scopes while filling free slots with disjoint work", async () => {
+  it("serializes overlapping scopes while filling free slots with disjoint work", { timeout: WAIT_TIMEOUT_MS + 5_000 }, async () => {
     const runtime = container!;
     const command = `${JSON.stringify(process.execPath)} -e "setTimeout(() => console.log('scope-e2e-done'), 350)"`;
 
