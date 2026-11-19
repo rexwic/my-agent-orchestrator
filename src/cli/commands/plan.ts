@@ -19,7 +19,7 @@ import yaml from 'js-yaml';
 import type { LightContainer } from '../../container.js';
 import { InvalidArgumentsError } from '../../domain/errors.js';
 import type { Plan, PlanStatus } from '../../domain/plan.js';
-import { printSuccess, printTable, printKeyValue, printWarning, dim, amber } from '../output.js';
+import { printSuccess, printTable, printKeyValue, printWarning, dim, amber, truncateToWidth } from '../output.js';
 
 const STATUS_LABEL: Record<PlanStatus, string> = {
   planning: 'planning',
@@ -34,7 +34,7 @@ function statusText(status: PlanStatus): string {
 
 function oneLine(text: string, max: number): string {
   const flat = text.replace(/\s+/g, ' ').trim();
-  return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
+  return truncateToWidth(flat, max);
 }
 
 /** What happened to a plan after an answer (also used by `orch decision answer`). */

@@ -8,6 +8,7 @@
 import chalk from 'chalk';
 import type { TaskStatus } from '../domain/task.js';
 import type { AgentStatus } from '../domain/agent.js';
+import { textDisplayWidth } from '../tui/text-cursor.js';
 
 // Unicode icons
 export const icons = {
@@ -183,13 +184,13 @@ export function printTable(
   padding: number = 2,
 ): void {
   const colWidths = headers.map((h, i) =>
-    Math.max(h.length, ...rows.map((r) => stripAnsi(r[i] ?? '').length)),
+    Math.max(textDisplayWidth(h), ...rows.map((r) => textDisplayWidth(stripAnsi(r[i] ?? '')))),
   );
 
   const lines: string[] = [];
 
   const headerLine = headers
-    .map((h, i) => h.padEnd(colWidths[i]! + padding))
+    .map((h, i) => h + ' '.repeat(Math.max(0, colWidths[i]! + padding - textDisplayWidth(h))))
     .join('');
   lines.push(`  ${colors.dim(headerLine)}`);
 
@@ -197,7 +198,7 @@ export function printTable(
     const line = row
       .map((cell, i) => {
         const stripped = stripAnsi(cell);
-        const pad = (colWidths[i] ?? 0) + padding - stripped.length;
+        const pad = (colWidths[i] ?? 0) + padding - textDisplayWidth(stripped);
         return cell + ' '.repeat(Math.max(0, pad));
       })
       .join('');
@@ -208,9 +209,9 @@ export function printTable(
 }
 
 export function printKeyValue(pairs: Array<[string, string]>): void {
-  const maxKey = Math.max(...pairs.map(([k]) => k.length));
+  const maxKey = Math.max(...pairs.map(([k]) => textDisplayWidth(k)));
   const lines = pairs.map(([key, value]) =>
-    `  ${colors.dim(key.padEnd(maxKey + 2))}${value}`,
+    `  ${colors.dim(key + ' '.repeat(maxKey + 2 - textDisplayWidth(key)))}${value}`,
   );
   process.stdout.write(lines.join('\n') + '\n');
 }
@@ -229,6 +230,20 @@ export function amber(text: string): string {
 
 export function dim(text: string): string {
   return colors.dim(text);
+}
+
+/** Cut text to at most `max` terminal columns (CJK counts as 2), ending with … when cut. */
+export function truncateToWidth(text: string, max: number): string {
+  if (textDisplayWidth(text) <= max) return text;
+  let out = '';
+  let w = 0;
+  for (const ch of text) {
+    const cw = textDisplayWidth(ch);
+    if (w + cw > max - 1) break;
+    out += ch;
+    w += cw;
+  }
+  return out + '…';
 }
 
 // Simple ANSI strip
