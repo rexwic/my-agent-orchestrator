@@ -107,3 +107,42 @@ describe('planTitle', () => {
     expect(planTitle('x'.repeat(100), 10)).toBe('xxxxxxxxx…');
   });
 });
+
+describe('validatePlanDraft: contracts (produces / uses)', () => {
+  const c = { ...contract, produces: ['docs/api/discount.yaml'] };
+  const b = { ...be, uses: ['./docs/api/discount.yaml'] };
+
+  it('a task may use a contract an upstream task produces', () => {
+    const r = validatePlanDraft(plan([c, b]), ctx);
+    expect(r.errors).toEqual([]);
+    expect(r.draft!.tasks[1]).toMatchObject({ uses: ['docs/api/discount.yaml'] });
+    expect(r.draft!.tasks[0]).toMatchObject({ produces: ['docs/api/discount.yaml'] });
+  });
+
+  it('producer must be in the depends_on chain', () => {
+    const r = validatePlanDraft(plan([c, { ...b, depends_on: [] }]), ctx);
+    expect(r.errors).toEqual(['be: uses "docs/api/discount.yaml", which api-contract produces — add it to depends_on']);
+  });
+
+  it('a transitive producer counts', () => {
+    const mid = { key: 'mid', title: 'Mid', role: 'backend', description: 'x', depends_on: ['api-contract'] };
+    expect(validatePlanDraft(plan([c, mid, { ...b, depends_on: ['mid'] }]), ctx).errors).toEqual([]);
+  });
+
+  it('a used file nobody produces must exist in the project (when checked)', () => {
+    const exists = (p: string) => p === 'docs/legacy.yaml';
+    expect(validatePlanDraft(plan([{ ...be, depends_on: [], uses: ['docs/legacy.yaml'] }]), { ...ctx, fileExists: exists }).errors).toEqual([]);
+    expect(validatePlanDraft(plan([{ ...be, depends_on: [], uses: ['docs/missing.yaml'] }]), { ...ctx, fileExists: exists }).errors)
+      .toEqual(['be: uses "docs/missing.yaml", but no task in the plan produces it and it does not exist in the project']);
+  });
+
+  it('uses must be a file (no globs), relative; a task cannot use what it produces', () => {
+    const r = validatePlanDraft(plan([{ ...be, depends_on: [], uses: ['docs/**', '../x.yaml'] }]), ctx);
+    expect(r.errors).toEqual([
+      'tasks[0] (be): uses "docs/**" must be a file path, not a pattern',
+      'tasks[0] (be): uses "../x.yaml" must be a path relative to the project root',
+    ]);
+    const self = validatePlanDraft(plan([{ ...contract, produces: ['docs/api/**'], uses: ['docs/api/discount.yaml'] }]), ctx);
+    expect(self.errors).toEqual(['api-contract: uses "docs/api/discount.yaml" and also produces it (a task must not change a contract it follows)']);
+  });
+});

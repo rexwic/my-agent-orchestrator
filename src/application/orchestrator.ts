@@ -46,6 +46,7 @@ import type { RoleService } from './role-service.js';
 import type { DecisionService } from './decision-service.js';
 import { describeAnswer, MAX_CONTEXT_LENGTH } from '../domain/decision.js';
 import type { DeliverableService } from './deliverable-service.js';
+import { readContractFiles } from '../infrastructure/workspace/contract-files.js';
 import { prependPath } from '../infrastructure/process/cli-shim.js';
 import { MemoryQuotaStore } from '../infrastructure/storage/quota-store.js';
 import type { IQuotaStore } from '../infrastructure/storage/interfaces.js';
@@ -1263,13 +1264,14 @@ export class Orchestrator {
           task.depends_on.length ? deliverables.upstreamFor(task).catch(() => []) : [],
         ])
         : [undefined, []];
+      const contracts = task.uses?.length ? await readContractFiles(workspacePath, task.uses).catch(() => []) : [];
       const context = buildPromptContext(
         task,
         agent,
         attempt,
         workspacePath,
         this.deps.config,
-        { allAgents, retryContext, sharedContext, feedback: task.feedback, messages: pendingMessages.length ? pendingMessages : undefined, goal: goalContext, decisions, planning, delivery, upstream },
+        { allAgents, retryContext, sharedContext, feedback: task.feedback, messages: pendingMessages.length ? pendingMessages : undefined, goal: goalContext, decisions, planning, delivery, upstream, contracts },
       );
 
       // Render prompt(s) — split mode for caching, legacy mode for backward compat

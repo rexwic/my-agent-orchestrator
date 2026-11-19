@@ -60,6 +60,13 @@ describe('TaskService', () => {
   });
 
   describe('create', () => {
+    it('normalizes produces / uses; uses must be files inside the project', async () => {
+      const task = await service.create({ title: 'API', produces: ['.\\docs\\api\\*.yaml'], uses: ['docs/api/x.yaml', 'docs/api/x.yaml'] });
+      expect(task).toMatchObject({ produces: ['docs/api/*.yaml'], uses: ['docs/api/x.yaml'] });
+      await expect(service.create({ title: 'B', uses: ['docs/**'] })).rejects.toThrow(/uses: "docs\/\*\*" must be a file path/);
+      await expect(service.create({ title: 'C', produces: ['../outside.txt'] })).rejects.toThrow(/produces: "\.\.\/outside\.txt" must be a path relative/);
+    });
+
     it('creates a task with defaults', async () => {
       const task = await service.create({ title: 'Do something' });
       expect(task.id).toMatch(/^tsk_/);

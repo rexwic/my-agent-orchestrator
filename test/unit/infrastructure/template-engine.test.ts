@@ -599,6 +599,22 @@ describe('system/user template split', () => {
     expect(rendered).toContain('orch task deliver report.md --status <status>');
   });
 
+  it('user template gives the contracts the task follows, as authoritative', async () => {
+    const ctx = buildPromptContext(makeTask(), makeAgent(), 1, '/workspace', DEFAULT_CONFIG, {
+      contracts: [
+        { path: 'docs/api/discount.yaml', content: 'openapi: 3.0.0\npaths: {}', truncated: true },
+        { path: 'docs/api/missing.yaml', content: '', missing: true },
+      ],
+    });
+    const rendered = await engine.render(DEFAULT_USER_TEMPLATE, ctx);
+    expect(rendered).toContain('## Contracts (authoritative)');
+    expect(rendered).toContain('do NOT change them');
+    expect(rendered).toMatch(/### `docs\/api\/discount\.yaml`\r?\n~~~~\r?\nopenapi: 3\.0\.0\r?\npaths: \{\}\r?\n~~~~\r?\n\(cut to fit/);
+    expect(rendered).toContain('### `docs/api/missing.yaml`\n(not found in your workspace yet');
+    const plain = await engine.render(DEFAULT_USER_TEMPLATE, buildPromptContext(makeTask(), makeAgent(), 1, '/workspace', DEFAULT_CONFIG));
+    expect(plain).not.toContain('## Contracts');
+  });
+
   it('user template shows what dependencies delivered; no delivery sections without them', async () => {
     const ctx = buildPromptContext(makeTask(), makeAgent(), 1, '/workspace', DEFAULT_CONFIG, {
       upstream: [{ task_id: 'tsk_up', title: 'API contract', status: 'done', report: '#### Summary\nWrote docs/api/discount.yaml' }],

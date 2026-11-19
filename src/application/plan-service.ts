@@ -14,6 +14,8 @@
  * and fails (and is retried) if the planner ends without submitting one.
  */
 
+import { existsSync } from 'node:fs';
+import path from 'node:path';
 import { nanoid } from 'nanoid';
 import yaml from 'js-yaml';
 import type { Decision } from '../domain/decision.js';
@@ -48,6 +50,8 @@ export interface PlanServiceDeps {
   roleStore: IRoleStore;
   eventBus: EventBus;
   config: OrchestratorConfig;
+  /** Project root: `uses` files no plan task produces must exist here. */
+  projectRoot?: string;
 }
 
 export interface StartPlanInput {
@@ -135,6 +139,7 @@ export class PlanService {
       roles: roles.roles.map((r) => r.name).filter((n) => n !== planner),
       existingTaskIds: new Set(tasks.map((t) => t.id)),
       maxTasks: this.maxTasks,
+      ...(this.deps.projectRoot ? { fileExists: (p: string) => existsSync(path.join(this.deps.projectRoot!, p)) } : {}),
     });
   }
 
@@ -327,6 +332,8 @@ export class PlanService {
         ...(t.review_criteria ? { review_criteria: t.review_criteria } : {}),
         ...(t.priority !== undefined ? { priority: t.priority } : {}),
         ...(t.needs_decision ? { needs_decision: true } : {}),
+        ...(t.produces ? { produces: t.produces } : {}),
+        ...(t.uses ? { uses: t.uses } : {}),
       });
       if (t.needs_decision) {
         await this.deps.decisionService.request({

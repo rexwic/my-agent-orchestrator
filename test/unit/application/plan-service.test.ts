@@ -259,3 +259,24 @@ describe('cancelling and run outcomes', () => {
     await expect(service.submit({ taskId: task.id, raw: draft })).rejects.toThrow(/Too many tasks: 4 \(max 2\)/);
   });
 });
+
+describe('PlanService contracts', () => {
+  it('created tasks carry produces / uses; uses must exist in the project when nobody produces it', async () => {
+    const { service, task } = setup();
+    (service as any).deps.projectRoot = process.cwd();
+    const withContract = {
+      goal: 'G',
+      tasks: [
+        { key: 'contract', title: 'API contract', role: 'backend', description: 'OpenAPI', produces: ['docs/api/discount.yaml'] },
+        { key: 'be', title: 'API', role: 'backend', description: 'API', depends_on: ['contract'], uses: ['docs/api/discount.yaml', 'package.json'] },
+      ],
+    };
+    const { plan, task: planner } = await service.start({ requirement: 'x' });
+    await expect(service.submit({ taskId: planner.id, raw: { ...withContract, tasks: [withContract.tasks[0], { ...withContract.tasks[1], uses: ['nope.yaml'] }] } }))
+      .rejects.toThrow(/uses "nope.yaml", but no task in the plan produces it/);
+    await service.submit({ taskId: planner.id, raw: withContract });
+    const approved = await service.approve(plan.id);
+    expect(await task(approved.created_tasks!['contract']!)).toMatchObject({ produces: ['docs/api/discount.yaml'] });
+    expect(await task(approved.created_tasks!['be']!)).toMatchObject({ uses: ['docs/api/discount.yaml', 'package.json'] });
+  });
+});

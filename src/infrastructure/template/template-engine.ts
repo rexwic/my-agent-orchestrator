@@ -73,6 +73,8 @@ export interface PromptContext {
   };
   /** The delivery report this run must end with. */
   delivery?: { sections: string[]; produces: string[] };
+  /** Contract files the task follows (uses), read from its workspace. */
+  contracts?: import('../workspace/contract-files.js').ContractFile[];
   /** Reports of the tasks this one depends on. */
   upstream?: Array<{ task_id: string; title: string; status: string; report: string }>;
   shared_context?: Record<string, string>;
@@ -259,6 +261,7 @@ export interface BuildPromptOptions {
   planning?: PromptContext['planning'];
   delivery?: PromptContext['delivery'];
   upstream?: PromptContext['upstream'];
+  contracts?: PromptContext['contracts'];
 }
 
 export function buildPromptContext(
@@ -269,7 +272,7 @@ export function buildPromptContext(
   config: OrchestratorConfig,
   options?: BuildPromptOptions,
 ): PromptContext {
-  const { allAgents, retryContext, sharedContext, feedback, messages: rawMessages, goal, decisions, planning, delivery, upstream } = options ?? {};
+  const { allAgents, retryContext, sharedContext, feedback, messages: rawMessages, goal, decisions, planning, delivery, upstream, contracts } = options ?? {};
 
   // Map messages to prompt-friendly shape
   const agentById = new Map((allAgents ?? []).map((a) => [a.id, a]));
@@ -318,6 +321,7 @@ export function buildPromptContext(
     planning,
     delivery,
     upstream: upstream?.length ? upstream : undefined,
+    contracts: contracts?.length ? contracts : undefined,
     shared_context: sharedContext && Object.keys(sharedContext).length > 0
       ? filterRelevantContext(sharedContext, {
           agentName: agent.name,
@@ -430,6 +434,19 @@ The tasks this one depends on are done. Their delivery reports:
 {% endfor %}
 {% endif %}
 
+{% if contracts %}
+## Contracts (authoritative)
+This task follows these contracts. They settle every disagreement between the tasks that share them (for example frontend and backend). Implement exactly what they say and do NOT change them: ORCH sends the task back if you do. If a contract is wrong or missing something, ask with \`orch decision request "<question>"\` and end your run.
+{% for c in contracts %}
+### \`{{ c.path }}\`
+{% if c.missing %}(not found in your workspace yet — ask with \`orch decision request\` if you cannot work without it)
+{% else %}~~~~
+{{ c.content }}
+~~~~
+{% if c.truncated %}(cut to fit; read the whole file in your workspace)
+{% endif %}{% endif %}{% endfor %}
+{% endif %}
+
 {% if decisions %}
 ## Decisions (binding)
 A human made these decisions. Follow them and do not reopen them:
@@ -446,7 +463,8 @@ The task above is a requirement. Turn it into a plan of tasks for the team. Read
 {% endfor %}
 **Planning rules:**
 - One task = one role, small enough for one agent run. Put the acceptance criteria in its description.
-- When frontend and backend both take part, the first task defines the API contract (e.g. an OpenAPI file); both sides depend on it and follow it — it settles disagreements.
+- When frontend and backend both take part, the first task defines the API contract (e.g. an OpenAPI file) and lists it in \`produces\`; both sides depend on it and list it in \`uses\`. A contract settles disagreements: tasks that use it get its content and may not change it.
+- \`produces\` = files a task must create (checked when it delivers); \`uses\` = contract files it follows (another task in its depends_on chain must produce them, or they exist already).
 - Give tasks that can run in parallel non-overlapping \`scope\` (the files they may change) so they do not conflict.
 - Use \`depends_on\` only for real ordering needs; independent tasks run in parallel.
 - \`review_criteria\` (test_pass, typecheck, lint) are checked automatically before a task is merged.
@@ -465,11 +483,13 @@ tasks:
       What to do ...
       Acceptance criteria: ...
     scope: [docs/api/discount.yaml]
+    produces: [docs/api/discount.yaml]
   - key: be-discount
     title: Implement the discount API
     role: backend
     depends_on: [api-contract]       # keys in this plan, or existing task IDs
     scope: ["src/main/java/**/discount/**"]
+    uses: [docs/api/discount.yaml]  # the contract it follows (must not change it)
     review_criteria: [test_pass]
     priority: 2                      # 1 (urgent) - 4, optional
     needs_decision: false            # optional

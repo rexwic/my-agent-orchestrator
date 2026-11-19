@@ -149,7 +149,7 @@ export async function buildLightContainer(context: CliContext): Promise<LightCon
   const roleService = new RoleService(roleStore, agentStore, eventBus, config);
   const decisionService = new DecisionService(decisionStore, taskStore, taskService, eventBus);
   // Registers itself on decisionService: answering a plan's decision approves / revises / cancels it.
-  const planService = new PlanService({ store: planStore, taskStore, taskService, goalService, decisionService, roleStore, eventBus, config });
+  const planService = new PlanService({ store: planStore, taskStore, taskService, goalService, decisionService, roleStore, eventBus, config, projectRoot: context.projectRoot });
   const deliverableService = new DeliverableService({ store: deliverableStore, taskStore, roleStore, eventBus, config });
 
   return {

@@ -21,6 +21,7 @@
 
 import type { OrchestratorConfig } from '../domain/config.js';
 import type { ReviewCriterion, ReviewResult, Task } from '../domain/task.js';
+import { normalizeRelativePath } from '../domain/scope.js';
 import type { ITaskStore } from '../infrastructure/storage/interfaces.js';
 import type { IWorkspaceManager, TargetHead } from '../infrastructure/workspace/interface.js';
 import type { IShellRunner } from '../infrastructure/process/shell-runner.js';
@@ -44,7 +45,7 @@ export type IntegrationTrigger =
 
 export type IntegrationOutcome =
   | { status: 'done' }
-  | { status: 'sent_back'; reason: 'conflict' | 'review'; files?: string[] }
+  | { status: 'sent_back'; reason: SendBackReason; files?: string[] }
   /** Synced and reviewed; waits for a human to approve (manual policy, no criteria). */
   | { status: 'awaiting_approval' }
   /** Stays in review for a human. */
@@ -176,6 +177,13 @@ export class IntegrationService {
           task.proof.files_changed = await this.deps.workspaceManager.getChangedFiles(branch);
         }
         await this.deps.taskStore.save(task);
+
+        // Contracts the task follows (uses) are changed only by the task that produces them.
+        if (trigger === 'completed' && task.uses?.length) {
+          const changed = (await this.deps.workspaceManager.getChangedFiles(branch)).map(normalizeRelativePath);
+          const touched = task.uses.filter((u) => changed.includes(u));
+          if (touched.length) return this.sendBack(task, 'contract', target, { files: touched });
+        }
       }
 
       if (verify || task.proof.synced_main !== target.sha) {
@@ -240,7 +248,7 @@ export class IntegrationService {
    */
   private async sendBack(
     task: Task,
-    reason: 'conflict' | 'review',
+    reason: SendBackReason,
     target: TargetHead,
     info: { files?: string[]; report?: string },
   ): Promise<IntegrationOutcome> {
@@ -261,7 +269,9 @@ export class IntegrationService {
       }
       const what = reason === 'conflict'
         ? `SYNC CONFLICT: merging ${target.name} conflicts in ${(info.files ?? []).join(', ')} (resolve in ${task.workspace}, then approve)`
-        : `REVIEW FAILED: review failed after merging ${target.name}`;
+        : reason === 'contract'
+          ? `CONTRACT CHANGED: the task changed ${(info.files ?? []).join(', ')}, which it must follow (approving accepts the change)`
+          : `REVIEW FAILED: review failed after merging ${target.name}`;
       const held = await this.hold(task, `${what} — sent back ${count} time(s) already, waiting for a human`);
       return this.escalate(task, reason, target, info, count, held);
     }
@@ -301,7 +311,7 @@ export class IntegrationService {
    */
   private async escalate(
     task: Task,
-    reason: 'conflict' | 'review',
+    reason: SendBackReason,
     target: TargetHead,
     info: { files?: string[]; report?: string },
     count: number,
@@ -311,7 +321,9 @@ export class IntegrationService {
     const after = count > 0 ? ` after ${count} send-back(s)` : '';
     const question = reason === 'conflict'
       ? `"${task.title}" ${count > 0 ? 'still ' : ''}conflicts with ${target.name}${after} (${(info.files ?? []).join(', ')}). How should we proceed?`
-      : `Review ${count > 0 ? 'keeps failing' : 'fails'} for "${task.title}" after merging ${target.name}${count > 0 ? ` (${count} send-back(s))` : ''}. How should we proceed?`;
+      : reason === 'contract'
+        ? `"${task.title}" keeps changing the contract ${(info.files ?? []).join(', ')}${after}. Should the contract change (approve), or how should the task follow it?`
+        : `Review ${count > 0 ? 'keeps failing' : 'fails'} for "${task.title}" after merging ${target.name}${count > 0 ? ` (${count} send-back(s))` : ''}. How should we proceed?`;
     const decision = await this.withLock(() => this.deps.decisions!.request({
       task_id: task.id,
       source: 'escalation',
@@ -358,11 +370,25 @@ export class IntegrationService {
 }
 
 /** Instructions for the agent that gets a task sent back. */
+/** Why ORCH sent a task back to its agent. */
+export type SendBackReason = 'conflict' | 'review' | 'contract';
+
 export function buildSendBackFeedback(
-  reason: 'conflict' | 'review',
+  reason: SendBackReason,
   target: string,
   info: { files?: string[]; report?: string },
 ): string {
+  if (reason === 'contract') {
+    const files = info.files ?? [];
+    return [
+      'This task changed contract file(s) it must follow:',
+      ...files.map((f) => `- ${f}`),
+      '',
+      'A contract is the agreement between tasks (for example the API between frontend and backend). Only the task that produces it changes it.',
+      `Restore the contract from \`${target}\`: git checkout ${target} -- ${files.join(' ')}`,
+      'Then make your code follow the contract as it is. If the contract is wrong or missing something, do not change it: ask with `orch decision request "<question>"` and end your run.',
+    ].join('\n');
+  }
   if (reason === 'conflict') {
     const files = (info.files ?? []).map((f) => `- ${f}`).join('\n');
     return [

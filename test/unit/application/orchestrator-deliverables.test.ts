@@ -117,10 +117,10 @@ describe('delivery report at the end of a run', () => {
 });
 
 describe('delivery prompt', () => {
-  it('carries the report contract and the reports of dependencies', async () => {
+  it('carries the report contract, the reports of dependencies and the contracts it uses', async () => {
     const taskStore = createMockTaskStore([
       makeTask({ id: 'tsk_up', title: 'API contract', status: 'done' }),
-      makeTask({ id: 'tsk_fe', title: 'Discount screen', status: 'todo', depends_on: ['tsk_up'], produces: ['src/fe/**'] }),
+      makeTask({ id: 'tsk_fe', title: 'Discount screen', status: 'todo', depends_on: ['tsk_up'], produces: ['src/fe/**'], uses: ['docs/api/none.yaml'] }),
     ]);
     const adapterRegistry = new AdapterRegistry();
     adapterRegistry.register(createMockAdapter([{ type: 'done', timestamp: new Date().toISOString(), data: { result: 'ok' } }]));
@@ -143,5 +143,6 @@ describe('delivery prompt', () => {
     expect(ctx.delivery).toEqual({ sections: ['Summary', 'Verification', 'Open issues'], produces: ['src/fe/**'] });
     expect(ctx.upstream).toEqual([expect.objectContaining({ task_id: 'tsk_up', title: 'API contract', status: 'done' })]);
     expect(ctx.upstream[0].report).toMatch(/^#### Summary/);
+    expect(ctx.contracts).toEqual([{ path: 'docs/api/none.yaml', content: '', missing: true }]);
   });
 });

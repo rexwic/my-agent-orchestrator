@@ -12,6 +12,7 @@
  */
 
 import type { ReviewCriterion } from './task.js';
+import { hasGlob, isProjectRelativePath, matchesPattern, normalizeRelativePath } from './scope.js';
 
 export type PlanStatus =
   /** The planner is working (or asked a question). */
@@ -42,6 +43,10 @@ export interface PlanTask {
   priority?: number;
   /** A human confirms before the task starts (true, or the question to ask). */
   needs_decision?: boolean | string;
+  /** Files the task must produce (paths or globs). */
+  produces?: string[];
+  /** Contract files the task follows and must not change (paths). */
+  uses?: string[];
 }
 
 /** What the planner submits. */
@@ -85,6 +90,8 @@ export interface PlanValidationContext {
   /** IDs of existing tasks a plan task may depend on. */
   existingTaskIds: ReadonlySet<string>;
   maxTasks: number;
+  /** Whether a file exists in the project (for `uses` no plan task produces). Omit to skip that check. */
+  fileExists?: (path: string) => boolean;
 }
 
 export interface PlanValidation {
@@ -96,7 +103,7 @@ export interface PlanValidation {
 }
 
 const PLAN_KEYS = ['goal', 'summary', 'tasks'] as const;
-const TASK_KEYS = ['key', 'title', 'role', 'description', 'depends_on', 'scope', 'review_criteria', 'priority', 'needs_decision'] as const;
+const TASK_KEYS = ['key', 'title', 'role', 'description', 'depends_on', 'scope', 'review_criteria', 'priority', 'needs_decision', 'produces', 'uses'] as const;
 const CRITERIA: readonly ReviewCriterion[] = ['test_pass', 'typecheck', 'lint'];
 const KEY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const MAX_TITLE = 200;
@@ -179,15 +186,17 @@ export function validatePlanDraft(raw: unknown, ctx: PlanValidationContext): Pla
 
     const dependsOn = stringList(item['depends_on'], `${label}: depends_on`, errors) ?? [];
 
-    let scope = stringList(item['scope'], `${label}: scope`, errors);
-    if (scope) {
-      scope = scope.map((s) => s.replace(/\\/g, '/').replace(/^\.\//, ''));
-      for (const s of scope) {
-        if (s.startsWith('/') || /^[A-Za-z]:/.test(s) || s.split('/').includes('..')) {
-          errors.push(`${label}: scope "${s}" must be a path relative to the project root`);
-        }
+    const paths = (field: 'scope' | 'produces' | 'uses'): string[] | undefined => {
+      const list = stringList(item[field], `${label}: ${field}`, errors)?.map(normalizeRelativePath).filter(Boolean);
+      for (const p of list ?? []) {
+        if (!isProjectRelativePath(p)) errors.push(`${label}: ${field} "${p}" must be a path relative to the project root`);
+        else if (field === 'uses' && hasGlob(p)) errors.push(`${label}: uses "${p}" must be a file path, not a pattern`);
       }
-    }
+      return list?.length ? [...new Set(list)] : undefined;
+    };
+    const scope = paths('scope');
+    const produces = paths('produces');
+    const uses = paths('uses');
 
     const criteria = stringList(item['review_criteria'], `${label}: review_criteria`, errors);
     if (criteria?.some((c) => !CRITERIA.includes(c as ReviewCriterion))) {
@@ -219,6 +228,8 @@ export function validatePlanDraft(raw: unknown, ctx: PlanValidationContext): Pla
       ...(criteria?.length ? { review_criteria: criteria as ReviewCriterion[] } : {}),
       ...(priority !== undefined ? { priority } : {}),
       ...(needsDecision !== undefined ? { needs_decision: needsDecision } : {}),
+      ...(produces ? { produces } : {}),
+      ...(uses ? { uses } : {}),
     });
   });
 
@@ -238,8 +249,26 @@ export function validatePlanDraft(raw: unknown, ctx: PlanValidationContext): Pla
 
   if (errors.length) return { errors, warnings };
 
-  // Parallel tasks (neither depends on the other) that may touch the same files.
+  // Contracts: a task uses files an upstream task produces (or that exist already).
   const reach = reachability(tasks);
+  for (const t of tasks) {
+    for (const u of t.uses ?? []) {
+      if (t.produces?.some((p) => matchesPattern(u, p))) {
+        errors.push(`${t.key}: uses "${u}" and also produces it (a task must not change a contract it follows)`);
+        continue;
+      }
+      const producers = tasks.filter((o) => o !== t && o.produces?.some((p) => matchesPattern(u, p)));
+      if (producers.some((p) => reach.get(t.key)!.has(p.key))) continue;
+      if (producers.length) {
+        errors.push(`${t.key}: uses "${u}", which ${producers.map((p) => p.key).join(' / ')} produces — add it to depends_on`);
+      } else if (ctx.fileExists && !ctx.fileExists(u)) {
+        errors.push(`${t.key}: uses "${u}", but no task in the plan produces it and it does not exist in the project`);
+      }
+    }
+  }
+  if (errors.length) return { errors, warnings };
+
+  // Parallel tasks (neither depends on the other) that may touch the same files.
   for (let i = 0; i < tasks.length; i++) {
     for (let j = i + 1; j < tasks.length; j++) {
       const a = tasks[i]!;

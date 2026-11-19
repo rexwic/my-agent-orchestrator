@@ -33,7 +33,7 @@ export type OrchestratorEvent =
   | { type: 'plan:cancelled'; planId: string }
   | { type: 'decision:answered'; decisionId: string; taskId?: string; action: 'continue' | 'approve' | 'cancel'; scope: 'task' | 'project' }
   | { type: 'task:synced'; taskId: string; target: string; sha: string; merged: boolean }
-  | { type: 'task:sent_back'; taskId: string; reason: 'conflict' | 'review'; count: number; max: number; files?: string[] }
+  | { type: 'task:sent_back'; taskId: string; reason: 'conflict' | 'review' | 'contract'; count: number; max: number; files?: string[] }
   | { type: 'run:retry'; runId: string; attempt: number; delay_ms: number }
   | { type: 'orchestrator:tick'; running: number; queued: number }
   | { type: 'orchestrator:stall_detected'; runId: string }

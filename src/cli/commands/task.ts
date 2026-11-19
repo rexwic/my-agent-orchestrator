@@ -43,6 +43,8 @@ export function registerTaskCommand(program: Command, container: LightContainer)
     .option('--review-criteria <criteria>', 'Comma-separated auto-review criteria: test_pass,typecheck,lint')
     .option('--scope <patterns>', 'Comma-separated glob patterns for file scope (e.g. src/auth/**,src/session/**)')
     .option('--goal-id <goalId>', 'Associate task with a goal')
+    .option('--produces <paths>', 'Comma-separated files (or globs) the task must produce; its delivery report is checked against them')
+    .option('--uses <paths>', 'Comma-separated contract files the task follows and must not change (e.g. docs/api/discount.yaml)')
     .option('--attach <paths>', 'Comma-separated file paths to attach (screenshots, docs)')
     .option('--needs-decision [question]', 'Gate: a human must approve (orch decision answer) before it starts')
     .option('-e, --edit', 'Open $EDITOR to write the description')
@@ -72,6 +74,8 @@ export function registerTaskCommand(program: Command, container: LightContainer)
         goalId: opts.goalId,
         attachments: opts.attach?.split(',').map((s: string) => s.trim()),
         needs_decision: Boolean(opts.needsDecision),
+        produces: opts.produces?.split(',').map((s: string) => s.trim()),
+        uses: opts.uses?.split(',').map((s: string) => s.trim()),
       });
 
       let gate: import('../../domain/decision.js').Decision | undefined;
@@ -168,6 +172,8 @@ export function registerTaskCommand(program: Command, container: LightContainer)
       if (t.assignee) pairs.push(['Agent', agentName(t.assignee)]);
       if (t.labels.length) pairs.push(['Labels', t.labels.join(', ')]);
       if (t.scope?.length) pairs.push(['Scope', t.scope.join(', ')]);
+      if (t.produces?.length) pairs.push(['Produces', t.produces.join(', ')]);
+      if (t.uses?.length) pairs.push(['Uses', `${t.uses.join(', ')} ${dim('(contract: must not change)')}`]);
       if (t.workspace_mode) pairs.push(['Workspace', t.workspace_mode]);
       if (t.workspace) pairs.push(['Path', filePath(t.workspace)]);
       if (t.review_criteria?.length) pairs.push(['Review', t.review_criteria.join(', ')]);

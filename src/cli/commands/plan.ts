@@ -166,17 +166,21 @@ export function registerPlanCommand(program: Command, container: LightContainer)
       console.log('');
       const created = p.created_tasks ?? {};
       printTable(
-        ['KEY', 'ROLE', 'TITLE', 'AFTER', 'SCOPE', 'CHECKS', p.status === 'approved' ? 'TASK' : 'GATE'],
+        ['KEY', 'ROLE', 'TITLE', 'AFTER', 'SCOPE', 'CONTRACT', 'CHECKS', p.status === 'approved' ? 'TASK' : 'GATE'],
         p.draft.tasks.map((t) => [
           t.key,
           t.role,
           oneLine(t.title, 40),
           t.depends_on.join(', ') || '—',
           oneLine(t.scope?.join(', ') ?? '—', 30),
+          oneLine([...(t.produces ?? []).map((p) => '→ ' + p), ...(t.uses ?? []).map((u) => '← ' + u)].join(', ') || '—', 34),
           t.review_criteria?.join(', ') ?? '—',
           p.status === 'approved' ? (created[t.key] ?? '—') : (t.needs_decision ? amber('asks you') : ''),
         ]),
       );
+      if (p.draft.tasks.some((t) => t.produces?.length || t.uses?.length)) {
+        console.log(dim('  CONTRACT: → files the task produces · ← contract files it follows and must not change'));
+      }
       if (p.status === 'awaiting_approval') {
         const check = await container.planService.validate(p.draft, p);
         for (const w of [...check.errors, ...check.warnings]) printWarning(w);

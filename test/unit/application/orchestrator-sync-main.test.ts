@@ -186,6 +186,37 @@ describe('send back to the agent', () => {
     expect(wm.cleanup).not.toHaveBeenCalled();
   });
 
+  it('changing a contract the task uses sends it back with how to restore it; no sync, no merge', async () => {
+    const { finish, get, wm, calls, events } = await setup({ task: { uses: ['docs/api/order.yaml'] } });
+    vi.mocked(wm.getChangedFiles).mockResolvedValue(['src/Order.java', 'docs\\api\\order.yaml']);
+
+    await finish();
+
+    expect(calls).toEqual(['commit']);
+    const task = await get();
+    expect(task).toMatchObject({ status: 'todo', send_backs: 1 });
+    expect(task.feedback).toContain('- docs/api/order.yaml');
+    expect(task.feedback).toContain('git checkout main -- docs/api/order.yaml');
+    expect(task.feedback).toContain('orch decision request');
+    expect(events).toContainEqual(expect.objectContaining({ type: 'task:sent_back', reason: 'contract', files: ['docs/api/order.yaml'] }));
+  });
+
+  it('leaving a used contract alone integrates as usual', async () => {
+    const { finish, get, wm } = await setup({ task: { uses: ['docs/api/order.yaml'] } });
+    vi.mocked(wm.getChangedFiles).mockResolvedValue(['src/Order.java']);
+    await finish();
+    expect((await get()).status).toBe('done');
+  });
+
+  it('a contract change past max_send_backs waits in review for a human', async () => {
+    const { finish, get, wm } = await setup({ task: { uses: ['docs/api/order.yaml'], send_backs: 3 } });
+    vi.mocked(wm.getChangedFiles).mockResolvedValue(['docs/api/order.yaml']);
+    await finish();
+    const task = await get();
+    expect(task.status).toBe('review');
+    expect(task.proof?.agent_summary).toMatch(/^CONTRACT CHANGED: .*docs\/api\/order\.yaml/);
+  });
+
   it('after max_send_backs it stops sending back and waits in review for a human', async () => {
     const { finish, get, events } = await setup({
       criteria: ['test_pass'],
