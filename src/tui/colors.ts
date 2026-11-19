@@ -235,6 +235,7 @@ const TASK_STATUS_COLOR_TOKEN: Record<TaskStatus, keyof TuiColorPalette> = {
   in_progress: 'green',
   retrying: 'yellow',
   review: 'blue',
+  waiting_decision: 'amber',
   todo: 'dim',
   done: 'green',
   failed: 'red',

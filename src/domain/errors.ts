@@ -32,8 +32,8 @@ export class NotInitializedError extends OrchestryError {
 }
 
 export class InvalidArgumentsError extends OrchestryError {
-  constructor(message: string) {
-    super(message, 2);
+  constructor(message: string, hint?: string) {
+    super(message, 2, hint);
     this.name = 'InvalidArgumentsError';
   }
 }

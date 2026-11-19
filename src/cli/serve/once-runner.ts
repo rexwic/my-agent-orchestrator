@@ -13,7 +13,8 @@ import type { Orchestrator } from '../../application/orchestrator.js';
 import type { ITaskStore } from '../../infrastructure/storage/interfaces.js';
 import type { EventBus } from '../../application/event-bus.js';
 
-export type OnceResult = 'all_done' | 'has_failed';
+/** needs_decision: the remaining tasks wait for `orch decision answer`, so --once stops there. */
+export type OnceResult = 'all_done' | 'has_failed' | 'needs_decision';
 
 /**
  * Run all current todo tasks, then stop.
@@ -47,7 +48,8 @@ export async function runOnce(
     await orchestrator.stop();
 
     const hasFailed = finalTasks.some((t) => t.status === 'failed');
-    return hasFailed ? 'has_failed' : 'all_done';
+    if (hasFailed) return 'has_failed';
+    return finalTasks.some((t) => t.status === 'waiting_decision') ? 'needs_decision' : 'all_done';
   } finally {
     unsubShutdown();
   }
@@ -64,8 +66,8 @@ async function waitForAllTerminal(
     // Empty task list — nothing to process, exit immediately
     if (tasks.length === 0) return tasks;
 
-    // All tasks reached terminal status — done
-    if (tasks.every((t) => isTerminal(t.status))) return tasks;
+    // All tasks reached terminal status, or wait for a human decision — done
+    if (tasks.every((t) => isTerminal(t.status) || t.status === 'waiting_decision')) return tasks;
 
     // Orchestrator shut down unexpectedly — return current state
     if (isStopped()) return tasks;

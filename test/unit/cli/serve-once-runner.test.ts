@@ -58,6 +58,19 @@ describe('runOnce', () => {
     expect(result).toBe('all_done');
   });
 
+  it('stops with needs_decision when the remaining tasks wait for a human decision', async () => {
+    const orchestrator = makeOrchestrator();
+    const taskStore = makeTaskStore([
+      { id: 'tsk_1', status: 'done' },
+      { id: 'tsk_2', status: 'waiting_decision' },
+    ]);
+
+    const result = await runOnce(orchestrator, taskStore, new EventBus(), 10);
+
+    expect(result).toBe('needs_decision');
+    expect(orchestrator.stop).toHaveBeenCalled();
+  });
+
   it('returns has_failed when any task is failed', async () => {
     const orchestrator = makeOrchestrator();
     const taskStore = makeTaskStore([

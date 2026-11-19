@@ -14,6 +14,7 @@ export const icons = {
   running: '●',
   todo: '○',
   review: '◈',
+  waiting_decision: '◇',
   done: '✓',
   failed: '✕',
   retrying: '↻',
@@ -31,6 +32,7 @@ const asciiIcons: Record<keyof typeof icons, string> = {
   running: '*',
   todo: 'o',
   review: '#',
+  waiting_decision: '?',
   done: '+',
   failed: 'x',
   retrying: '~',
@@ -103,6 +105,8 @@ export function statusIcon(status: TaskStatus | AgentStatus): string {
       return colors.dim(getIcon('todo'));
     case 'review':
       return colors.blue(getIcon('review'));
+    case 'waiting_decision':
+      return colors.amber(getIcon('waiting_decision'));
     case 'done':
       return colors.green(getIcon('done'));
     case 'failed':

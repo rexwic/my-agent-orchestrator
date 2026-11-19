@@ -140,6 +140,18 @@ export class StructuredLogger {
       case 'quota:resumed':
         return { ts, level: 'info', event: event.type, group: event.group, manual: event.manual };
 
+      case 'decision:requested':
+        return {
+          ts, level: 'warn', event: event.type, decisionId: event.decisionId, source: event.source,
+          ...(event.taskId ? { taskId: event.taskId } : {}), question: event.question,
+        };
+
+      case 'decision:answered':
+        return {
+          ts, level: 'info', event: event.type, decisionId: event.decisionId,
+          ...(event.taskId ? { taskId: event.taskId } : {}), action: event.action, scope: event.scope,
+        };
+
       case 'task:approved':
         return { ts, level: 'info', event: event.type, taskId: event.taskId };
 

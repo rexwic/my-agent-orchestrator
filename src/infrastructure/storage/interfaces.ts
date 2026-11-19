@@ -63,6 +63,13 @@ export interface IRoleStore {
   delete(name: string): Promise<void>;
 }
 
+export interface IDecisionStore {
+  save(decision: import('../../domain/decision.js').Decision): Promise<void>;
+  get(id: string): Promise<import('../../domain/decision.js').Decision | null>;
+  /** All decisions, oldest first. */
+  list(): Promise<import('../../domain/decision.js').Decision[]>;
+}
+
 export interface IQuotaStore {
   read(): Promise<import('../../domain/quota.js').QuotaState>;
   write(state: import('../../domain/quota.js').QuotaState): Promise<void>;

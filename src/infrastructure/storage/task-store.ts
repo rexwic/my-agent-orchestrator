@@ -71,11 +71,12 @@ function statusPriority(status: TaskStatus): number {
   const order: Record<TaskStatus, number> = {
     in_progress: 0,
     retrying: 1,
-    review: 2,
-    todo: 3,
-    done: 4,
-    failed: 5,
-    cancelled: 6,
+    waiting_decision: 2,
+    review: 3,
+    todo: 4,
+    done: 5,
+    failed: 6,
+    cancelled: 7,
   };
   return order[status];
 }

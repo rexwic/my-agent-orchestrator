@@ -43,6 +43,9 @@ import { IntegrationService, type IntegrationOutcome } from './integration-servi
 import { QuotaService } from './quota-service.js';
 import { Semaphore } from './semaphore.js';
 import type { RoleService } from './role-service.js';
+import type { DecisionService } from './decision-service.js';
+import { describeAnswer } from '../domain/decision.js';
+import { prependPath } from '../infrastructure/process/cli-shim.js';
 import { MemoryQuotaStore } from '../infrastructure/storage/quota-store.js';
 import type { IQuotaStore } from '../infrastructure/storage/interfaces.js';
 import type { QuotaState } from '../domain/quota.js';
@@ -76,6 +79,10 @@ export interface OrchestratorDeps {
   quotaStore?: IQuotaStore;
   /** Roles → agent instances; synced at the start of every tick. */
   roleService?: RoleService;
+  /** Human decisions: escalations, agent questions, binding answers in prompts. */
+  decisionService?: DecisionService;
+  /** Prepares a directory with an `orch` launcher to put first on agents' PATH. */
+  prepareAgentBin?: () => Promise<string | undefined>;
   config: OrchestratorConfig;
   projectRoot: string;
   lockPath: string;
@@ -162,6 +169,7 @@ export class Orchestrator {
       reviewSlots: this.reviewSlots,
       withLock: (fn) => this.withStateLock(fn),
       isStopping: () => this.shuttingDown,
+      ...(deps.decisionService ? { decisions: deps.decisionService } : {}),
     });
     this.cachedTaskStore = new CachedTaskStore(deps.taskStore);
     this.cachedAgentStore = new CachedAgentStore(deps.agentStore);
@@ -915,10 +923,11 @@ export class Orchestrator {
     }
 
     // Scope overlap check — pre-compute index of held scopes, then check candidates.
-    // A scope is held while the task runs AND while it waits in review: its changes
-    // are not merged yet, so another agent editing the same files would conflict.
+    // A scope is held while the task runs AND while it waits in review or for a
+    // decision: its changes are not merged yet, so another agent editing the same
+    // files would conflict.
     const blockedIds = new Set<string>();
-    const inProgressScoped = allTasks.filter((t) => (t.status === 'in_progress' || t.status === 'review') && t.scope?.length);
+    const inProgressScoped = allTasks.filter((t) => (t.status === 'in_progress' || t.status === 'review' || t.status === 'waiting_decision') && t.scope?.length);
     const scopeIndex = new ScopeIndex(inProgressScoped.map((t) => t.scope));
     for (const candidate of candidates) {
       if (!candidate.scope?.length) continue;
@@ -1238,13 +1247,14 @@ export class Orchestrator {
         };
       }
 
+      const decisions = await this.bindingDecisions(task);
       const context = buildPromptContext(
         task,
         agent,
         attempt,
         workspacePath,
         this.deps.config,
-        { allAgents, retryContext, sharedContext, feedback: task.feedback, messages: pendingMessages.length ? pendingMessages : undefined, goal: goalContext },
+        { allAgents, retryContext, sharedContext, feedback: task.feedback, messages: pendingMessages.length ? pendingMessages : undefined, goal: goalContext, decisions },
       );
 
       // Render prompt(s) — split mode for caching, legacy mode for backward compat
@@ -1321,16 +1331,18 @@ export class Orchestrator {
       const abortController = new AbortController();
       this.abortControllers.set(taskId, abortController);
 
+      const baseEnv: Record<string, string | undefined> = {
+        ...agent.config.env,
+        ORCH_AGENT_ID: agent.id,
+        ORCH_AGENT_NAME: agent.name,
+        ORCH_TASK_ID: task.id,
+      };
+      const agentBin = await this.agentBinDir();
       const handle = adapter.execute({
         prompt,
         systemPrompt,
         workspace: workspacePath,
-        env: {
-          ...agent.config.env,
-          ORCH_AGENT_ID: agent.id,
-          ORCH_AGENT_NAME: agent.name,
-          ORCH_TASK_ID: task.id,
-        },
+        env: agentBin ? prependPath(baseEnv, agentBin) : (baseEnv as Record<string, string>),
         config: agentData.config,
         signal: abortController.signal,
       });
@@ -1657,7 +1669,10 @@ export class Orchestrator {
     const isAutonomousTask = task.labels?.includes(AUTONOMOUS_LABEL);
     const autoApprove = isAutonomousTask || agent?.config.approval_policy === 'auto';
 
-    const newStatus = resolveCompletionStatus(task, true, autoApprove);
+    // An agent that asked a human (orch decision request) waits for the answer.
+    const newStatus: import('../domain/task.js').TaskStatus = await this.hasPendingDecision(taskId)
+      ? 'waiting_decision'
+      : resolveCompletionStatus(task, true, autoApprove);
 
     // Finish run first (emits agent:completed)
     await this.deps.runService.finish(runId, 'succeeded', tokens);
@@ -1867,6 +1882,20 @@ export class Orchestrator {
       await this.deps.agentStore.save(agentAfterIdle);
     }
 
+    if (await this.hasPendingDecision(taskId)) {
+      // The agent asked a human and stopped: not a failure. Refund the attempt and
+      // keep the worktree; the task continues once the decision is answered.
+      task.attempts = Math.max(0, task.attempts - 1);
+      task.updated_at = new Date().toISOString();
+      await this.deps.taskStore.save(task);
+      await this.deps.taskService.updateStatus(taskId, 'waiting_decision');
+      delete state.running[taskId];
+      state.stats.total_runs++;
+      await this.saveState();
+      this.singleTaskRunIds.delete(taskId);
+      return;
+    }
+
     // Compute runtime once — used for both agent stats and global stats
     const runtimeMs = Date.now() - new Date(entry.started_at).getTime();
     await this.deps.agentService.updateStats(entry.agent_id, {
@@ -1928,6 +1957,33 @@ export class Orchestrator {
       // Reactive dispatch — agent is idle, try to assign next task immediately
       this.scheduleImmediateDispatch();
     }
+  }
+
+  private async hasPendingDecision(taskId: string): Promise<boolean> {
+    if (!this.deps.decisionService) return false;
+    return (await this.deps.decisionService.pendingFor(taskId).catch(() => [])).length > 0;
+  }
+
+  /** Answered decisions the agent on `task` must follow, shaped for the prompt. */
+  private async bindingDecisions(task: Task): Promise<Array<{ question: string; answer: string; project_wide: boolean }>> {
+    if (!this.deps.decisionService) return [];
+    const decisions = await this.deps.decisionService.bindingFor(task).catch(() => []);
+    return decisions.map((d) => ({ question: d.question, answer: describeAnswer(d), project_wide: d.answer?.scope === 'project' }));
+  }
+
+  private agentBinPromise: Promise<string | undefined> | undefined;
+
+  /** Directory with the `orch` launcher for agents (created once; undefined if unavailable). */
+  private agentBinDir(): Promise<string | undefined> {
+    if (!this.deps.prepareAgentBin) return Promise.resolve(undefined);
+    this.agentBinPromise ??= this.deps.prepareAgentBin().catch((err: unknown) => {
+      this.reportOnce('agent-bin', {
+        error: `Could not prepare the orch launcher for agents: ${err instanceof Error ? err.message : String(err)}`,
+        context: 'agents cannot run orch commands (e.g. orch decision request)',
+      });
+      return undefined;
+    });
+    return this.agentBinPromise;
   }
 
   /** Approve a reviewed task (merge + done). On merge failure it stays in review. */

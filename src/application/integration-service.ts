@@ -29,6 +29,7 @@ import type { TaskService } from './task-service.js';
 import { prefixSummary, type ReviewGate } from './review-gate.js';
 import { ReviewRunner } from './review-runner.js';
 import { Semaphore } from './semaphore.js';
+import type { DecisionService } from './decision-service.js';
 
 export const DEFAULT_MAX_SEND_BACKS = 3;
 /** Re-sync attempts in one go when main keeps moving; the next tick tries again. */
@@ -48,6 +49,8 @@ export type IntegrationOutcome =
   | { status: 'awaiting_approval' }
   /** Stays in review for a human. */
   | { status: 'review'; detail: string }
+  /** Loop limit reached: a human decides (`orch decision answer`). */
+  | { status: 'waiting_decision'; decisionId: string; detail: string }
   /** Still approved; retried on a later tick (shutting down, or main kept moving). */
   | { status: 'deferred'; detail: string }
   /** Not a worktree task in review, or already being integrated. */
@@ -72,6 +75,8 @@ export interface IntegrationDeps {
   withLock?: <T>(fn: () => Promise<T>) => Promise<T>;
   /** When true, approved tasks are left approved for the next start instead of merged. */
   isStopping?: () => boolean;
+  /** Escalation: past the send-back limit a human decides (otherwise the task just waits in review). */
+  decisions?: Pick<DecisionService, 'request'>;
 }
 
 export class IntegrationService {
@@ -257,7 +262,8 @@ export class IntegrationService {
       const what = reason === 'conflict'
         ? `SYNC CONFLICT: merging ${target.name} conflicts in ${(info.files ?? []).join(', ')} (resolve in ${task.workspace}, then approve)`
         : `REVIEW FAILED: review failed after merging ${target.name}`;
-      return this.hold(task, `${what} — sent back ${count} time(s) already, waiting for a human`);
+      const held = await this.hold(task, `${what} — sent back ${count} time(s) already, waiting for a human`);
+      return this.escalate(task, reason, target, info, count, held);
     }
 
     const sentBack = await this.withLock(async () => {
@@ -287,6 +293,33 @@ export class IntegrationService {
       ...(info.files ? { files: info.files } : {}),
     });
     return { status: 'sent_back', reason, ...(info.files ? { files: info.files } : {}) };
+  }
+
+  /**
+   * Past the send-back limit: ask a human instead of looping. The decision
+   * carries what the agent would have been told, so "continue" can resume it.
+   */
+  private async escalate(
+    task: Task,
+    reason: 'conflict' | 'review',
+    target: TargetHead,
+    info: { files?: string[]; report?: string },
+    count: number,
+    held: IntegrationOutcome,
+  ): Promise<IntegrationOutcome> {
+    if (!this.deps.decisions || held.status !== 'review') return held;
+    const after = count > 0 ? ` after ${count} send-back(s)` : '';
+    const question = reason === 'conflict'
+      ? `"${task.title}" ${count > 0 ? 'still ' : ''}conflicts with ${target.name}${after} (${(info.files ?? []).join(', ')}). How should we proceed?`
+      : `Review ${count > 0 ? 'keeps failing' : 'fails'} for "${task.title}" after merging ${target.name}${count > 0 ? ` (${count} send-back(s))` : ''}. How should we proceed?`;
+    const decision = await this.withLock(() => this.deps.decisions!.request({
+      task_id: task.id,
+      source: 'escalation',
+      question,
+      context: buildSendBackFeedback(reason, target.name, info),
+      requested_by: 'orch',
+    }));
+    return { status: 'waiting_decision', decisionId: decision.id, detail: held.detail };
   }
 
   /** Keep the task in review for a human, with the reason in front of its summary. */

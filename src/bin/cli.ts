@@ -27,6 +27,7 @@ const LIGHT_COMMANDS: Record<string, (program: Command, container: LightContaine
   goal:    async (p, c) => { const m = await import('../cli/commands/goal.js');    m.registerGoalCommand(p, c); },
   team:    async (p, c) => { const m = await import('../cli/commands/team.js');    m.registerTeamCommand(p, c); },
   role:    async (p, c) => { const m = await import('../cli/commands/role.js');    m.registerRoleCommand(p, c); },
+  decision: async (p, c) => { const m = await import('../cli/commands/decision.js'); m.registerDecisionCommand(p, c); },
   org:     async (p, c) => { const m = await import('../cli/commands/org.js');     m.registerOrgCommand(p, c); },
 };
 
@@ -66,6 +67,7 @@ const COMMAND_STUBS: Array<[name: string, description: string]> = [
   ['goal',    'Manage goals'],
   ['team',    'Manage teams'],
   ['role',    'Manage roles (model/effort per role, N agents each)'],
+  ['decision', 'Decisions for a human (agent questions, loop escalations, gates)'],
   ['org',     'Pre-built AI companies'],
   ['run',     'Run tasks'],
   ['doctor',  'Check adapters and dependencies'],
@@ -212,7 +214,8 @@ async function main(): Promise<void> {
   // Start background update check (cache-only — never blocks CLI).
   // TUI and update commands handle their own checks.
   let updateMod: typeof import('../cli/update-check.js') | undefined;
-  const skipUpdateCheck = sub === 'tui' || sub === 'update' || sub === 'serve';
+  // Also skipped inside agents (ORCH_TASK_ID is set): no notices on their stderr, no background installs.
+  const skipUpdateCheck = sub === 'tui' || sub === 'update' || sub === 'serve' || Boolean(process.env.ORCH_TASK_ID);
   const updateCheck = skipUpdateCheck
     ? Promise.resolve(null)
     : import('../cli/update-check.js').then((m) => {

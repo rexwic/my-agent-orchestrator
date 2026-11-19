@@ -61,6 +61,8 @@ export interface PromptContext {
   workspace_path: string;
   retry?: RetryContext;
   feedback?: string;
+  /** Decisions a human made that this agent must follow. */
+  decisions?: Array<{ question: string; answer: string; project_wide: boolean }>;
   shared_context?: Record<string, string>;
   messages?: Array<{
     id: string;
@@ -241,6 +243,7 @@ export interface BuildPromptOptions {
   feedback?: string;
   messages?: import('../../domain/message.js').Message[];
   goal?: GoalContext;
+  decisions?: PromptContext['decisions'];
 }
 
 export function buildPromptContext(
@@ -251,7 +254,7 @@ export function buildPromptContext(
   config: OrchestratorConfig,
   options?: BuildPromptOptions,
 ): PromptContext {
-  const { allAgents, retryContext, sharedContext, feedback, messages: rawMessages, goal } = options ?? {};
+  const { allAgents, retryContext, sharedContext, feedback, messages: rawMessages, goal, decisions } = options ?? {};
 
   // Map messages to prompt-friendly shape
   const agentById = new Map((allAgents ?? []).map((a) => [a.id, a]));
@@ -296,6 +299,7 @@ export function buildPromptContext(
     workspace_path: workspacePath,
     retry: attempt > 1 ? retryContext : undefined,
     feedback,
+    decisions: decisions?.length ? decisions : undefined,
     shared_context: sharedContext && Object.keys(sharedContext).length > 0
       ? filterRelevantContext(sharedContext, {
           agentName: agent.name,
@@ -392,12 +396,24 @@ Use \`orch agent list\` to check current agent statuses. Find teammates by name/
 
 {% if feedback %}
 ## Review Feedback
-This task was previously completed but **sent back** during review with the following feedback:
+This task was sent back or paused earlier (by a review, ORCH, or a human decision) with the following feedback:
 
 {{ feedback }}
 
 **Important:** Address the feedback above. Your earlier work is still in the workspace — build on it; do NOT redo work that was already accepted.
 {% endif %}
+
+{% if decisions %}
+## Decisions (binding)
+A human made these decisions. Follow them and do not reopen them:
+{% for d in decisions %}- {{ d.question }} → **{{ d.answer }}**{% if d.project_wide %} (project-wide){% endif %}
+{% endfor %}
+{% endif %}
+
+## When a human must decide
+If the requirements are ambiguous or contradict each other, or the choice is a product or architecture decision that is not yours to make, do not guess. Ask, then stop:
+\`orch decision request "<question>" --option "<choice A>" --option "<choice B>"\`
+(it applies to this task, {{ task.id }}). Then end your run with a short summary of what you did so far — you will be resumed with the answer.
 
 {% if shared_context %}
 ## Shared Context

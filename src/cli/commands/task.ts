@@ -19,6 +19,7 @@ import {
   filePath,
   dim,
   agentName,
+  amber,
 } from '../output.js';
 // editor.ts loaded lazily — only needed for task add --edit and task edit
 
@@ -43,6 +44,7 @@ export function registerTaskCommand(program: Command, container: LightContainer)
     .option('--scope <patterns>', 'Comma-separated glob patterns for file scope (e.g. src/auth/**,src/session/**)')
     .option('--goal-id <goalId>', 'Associate task with a goal')
     .option('--attach <paths>', 'Comma-separated file paths to attach (screenshots, docs)')
+    .option('--needs-decision [question]', 'Gate: a human must approve (orch decision answer) before it starts')
     .option('-e, --edit', 'Open $EDITOR to write the description')
     .action(async (title: string, opts) => {
       let description = opts.description;
@@ -69,7 +71,18 @@ export function registerTaskCommand(program: Command, container: LightContainer)
         scope: opts.scope?.split(',').map((s: string) => s.trim()),
         goalId: opts.goalId,
         attachments: opts.attach?.split(',').map((s: string) => s.trim()),
+        needs_decision: Boolean(opts.needsDecision),
       });
+
+      let gate: import('../../domain/decision.js').Decision | undefined;
+      if (opts.needsDecision) {
+        gate = await container.decisionService.request({
+          task_id: task.id,
+          source: 'gate',
+          question: typeof opts.needsDecision === 'string' ? opts.needsDecision : `Start "${task.title}"?`,
+          requested_by: 'human',
+        });
+      }
 
       if (container.context.json) {
         console.log(JSON.stringify(task, null, 2));
@@ -77,6 +90,7 @@ export function registerTaskCommand(program: Command, container: LightContainer)
         console.log(task.id);
       } else {
         printSuccess(`Created ${task.id} "${task.title}"`);
+        if (gate) console.log(`  Waits for decision ${gate.id} — start it with: orch decision answer ${gate.id} -m "go"`);
       }
     });
 
@@ -161,6 +175,17 @@ export function registerTaskCommand(program: Command, container: LightContainer)
       pairs.push(['Created', t.created_at]);
 
       printKeyValue(pairs);
+
+      const decisions = await container.decisionService.list({ taskId: t.id });
+      if (decisions.length) {
+        const { describeAnswer } = await import('../../domain/decision.js');
+        console.log(`\n  Decisions\n  ${'─'.repeat(42)}`);
+        for (const d of decisions) {
+          console.log(d.status === 'pending'
+            ? `  ${amber('pending')}   ${d.id}  ${d.question}`
+            : `  ${dim('answered')}  ${d.id}  ${d.question} → ${describeAnswer(d)}`);
+        }
+      }
 
       if (t.attachments?.length) {
         console.log(`\n  Attachments (${t.attachments.length})\n  ${'─'.repeat(42)}`);
@@ -299,6 +324,9 @@ export function registerTaskCommand(program: Command, container: LightContainer)
           printSuccess(outcome.reason === 'conflict'
             ? `Approved ${id}, but merging main into it conflicts (${(outcome.files ?? []).join(', ')}) — sent back to its agent`
             : `Approved ${id}, but review failed after merging main — sent back to its agent`);
+          return;
+        case 'waiting_decision':
+          printSuccess(`Approved ${id}, but it hit the send-back limit — waiting for decision ${outcome.decisionId} (orch decision show ${outcome.decisionId})`);
           return;
         case 'deferred':
           printSuccess(`Approved ${id} — not merged yet (${outcome.detail}); the orchestrator retries it`);

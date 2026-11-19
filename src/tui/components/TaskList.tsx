@@ -21,15 +21,16 @@ import { Spinner } from './Spinner.js';
 import { formatDuration } from '../../cli/output.js';
 import { useTuiPalette } from '../paletteContext.js';
 
-// Status sort order: running → retrying → review → todo → done → failed → cancelled
+// Status sort order: running → retrying → waiting decision → review → todo → done → failed → cancelled
 const STATUS_ORDER: Record<TaskStatus, number> = {
   in_progress: 0,
   retrying: 1,
-  review: 2,
-  todo: 3,
-  done: 4,
-  failed: 5,
-  cancelled: 6,
+  waiting_decision: 2,
+  review: 3,
+  todo: 4,
+  done: 5,
+  failed: 6,
+  cancelled: 7,
 };
 
 /* ── Status chip config ────────────────────────────── */
@@ -55,6 +56,7 @@ const STATUS_CHIP: Record<TaskStatus, StatusChipConfig> = {
   in_progress: { icon: TRIANGLE, label: 'RUN', fg: 'green', bg: 'successBg', bold: true, spinner: true },
   retrying: { icon: RETRY, label: 'RETRY', fg: 'yellow', bg: 'warnBg', spinner: true },
   review: { icon: LOZENGE, label: 'REVIEW', fg: 'blue', bg: 'toolBg' },
+  waiting_decision: { icon: '◇', label: 'DECIDE', fg: 'amber', bg: 'warnBg', bold: true },
   todo: { icon: EMPTY_CIRCLE, label: 'TODO', fg: 'dim', bg: 'neutralBg' },
   done: { icon: CHECK, label: 'DONE', fg: 'green', bg: 'successBg' },
   failed: { icon: CROSS, label: 'FAIL', fg: 'red', bg: 'errorBg', bold: true },

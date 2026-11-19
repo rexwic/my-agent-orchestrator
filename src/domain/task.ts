@@ -10,6 +10,8 @@ export type TaskStatus =
   | 'in_progress'
   | 'retrying'
   | 'review'
+  /** Waiting for a human decision (see Decision); not dispatched meanwhile. */
+  | 'waiting_decision'
   | 'done'
   | 'failed'
   | 'cancelled';
@@ -85,4 +87,6 @@ export interface CreateTaskInput {
   scope?: string[];
   goalId?: string;
   attachments?: string[];
+  /** Create the task in waiting_decision: a human approves before it starts. */
+  needs_decision?: boolean;
 }

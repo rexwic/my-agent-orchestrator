@@ -102,6 +102,19 @@ export class Paths {
     return path.join(this.rolesDir, `${sanitizeId(name)}.yml`);
   }
 
+  get decisionsDir(): string {
+    return path.join(this.root, 'decisions');
+  }
+
+  decisionPath(id: string): string {
+    return path.join(this.decisionsDir, `${sanitizeId(id)}.yml`);
+  }
+
+  /** Launchers for the orch CLI, put on agents' PATH. */
+  get binDir(): string {
+    return path.join(this.root, 'bin');
+  }
+
   teamPath(id: string): string {
     return path.join(this.teamsDir, `${sanitizeId(id)}.yml`);
   }

@@ -549,6 +549,27 @@ describe('system/user template split', () => {
     expect(rendered).toContain('Fix the error handling');
   });
 
+  it('user template lists binding decisions and how to request one', async () => {
+    const ctx = buildPromptContext(makeTask({ id: 'tsk_dec' }), makeAgent(), 1, '/workspace', DEFAULT_CONFIG, {
+      decisions: [
+        { question: 'Money type?', answer: 'BigDecimal', project_wide: true },
+        { question: 'Page size?', answer: '50', project_wide: false },
+      ],
+    });
+    const rendered = await engine.render(DEFAULT_USER_TEMPLATE, ctx);
+    expect(rendered).toContain('## Decisions (binding)');
+    expect(rendered).toContain('- Money type? → **BigDecimal** (project-wide)');
+    expect(rendered).toMatch(/- Page size\? → \*\*50\*\*\r?\n/);
+    expect(rendered).toContain('orch decision request "<question>"');
+    expect(rendered).toContain('tsk_dec');
+  });
+
+  it('user template has no decisions section when there are none', async () => {
+    const rendered = await engine.render(DEFAULT_USER_TEMPLATE, buildPromptContext(makeTask(), makeAgent(), 1, '/workspace', DEFAULT_CONFIG));
+    expect(rendered).not.toContain('## Decisions (binding)');
+    expect(rendered).toContain('## When a human must decide');
+  });
+
   it('user template includes retry context on attempt > 1', async () => {
     const retryCtx = buildPromptContext(
       makeTask(),

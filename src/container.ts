@@ -9,7 +9,7 @@
 
 import type { OrchestratorConfig } from './domain/config.js';
 import type { CliContext } from './cli/context.js';
-import type { ITaskStore, IAgentStore, IRunStore, IStateStore, IConfigStore, IContextStore, IMessageStore, IGoalStore, ITeamStore, IQuotaStore, IRoleStore } from './infrastructure/storage/interfaces.js';
+import type { ITaskStore, IAgentStore, IRunStore, IStateStore, IConfigStore, IContextStore, IMessageStore, IGoalStore, ITeamStore, IQuotaStore, IRoleStore, IDecisionStore } from './infrastructure/storage/interfaces.js';
 import type { IWorkspaceManager } from './infrastructure/workspace/interface.js';
 import type { ITemplateEngine } from './infrastructure/template/template-engine.js';
 import type { IProcessManager } from './infrastructure/process/process-manager.js';
@@ -30,6 +30,7 @@ import { GoalStore } from './infrastructure/storage/goal-store.js';
 import { TeamStore } from './infrastructure/storage/team-store.js';
 import { QuotaStore } from './infrastructure/storage/quota-store.js';
 import { RoleStore } from './infrastructure/storage/role-store.js';
+import { DecisionStore } from './infrastructure/storage/decision-store.js';
 
 import { EventBus } from './application/event-bus.js';
 import { TaskService } from './application/task-service.js';
@@ -40,6 +41,7 @@ import { GoalService } from './application/goal-service.js';
 import { TeamService } from './application/team-service.js';
 import { QuotaService } from './application/quota-service.js';
 import { RoleService } from './application/role-service.js';
+import { DecisionService } from './application/decision-service.js';
 
 import type { Orchestrator } from './application/orchestrator.js';
 import type { DoctorService } from './application/doctor-service.js';
@@ -66,6 +68,7 @@ export interface LightContainer {
   teamStore: ITeamStore;
   quotaStore: IQuotaStore;
   roleStore: IRoleStore;
+  decisionStore: IDecisionStore;
 
   // Application — services only
   eventBus: EventBus;
@@ -79,6 +82,7 @@ export interface LightContainer {
   quotaService: QuotaService;
   /** Roles (.orchestry/roles/*.yml) and their agent instances. */
   roleService: RoleService;
+  decisionService: DecisionService;
 }
 
 /** Full container — everything from light + orchestrator, adapters, workspace, template. */
@@ -121,6 +125,7 @@ export async function buildLightContainer(context: CliContext): Promise<LightCon
   const teamStore = new TeamStore(paths);
   const quotaStore = new QuotaStore(paths);
   const roleStore = new RoleStore(paths);
+  const decisionStore = new DecisionStore(paths);
 
   // Application — services
   const eventBus = new EventBus();
@@ -132,6 +137,7 @@ export async function buildLightContainer(context: CliContext): Promise<LightCon
   const teamService = new TeamService(teamStore, agentStore, taskStore, eventBus);
   const quotaService = new QuotaService(quotaStore, eventBus);
   const roleService = new RoleService(roleStore, agentStore, eventBus, config);
+  const decisionService = new DecisionService(decisionStore, taskStore, taskService, eventBus);
 
   return {
     context,
@@ -150,6 +156,7 @@ export async function buildLightContainer(context: CliContext): Promise<LightCon
     teamStore,
     quotaStore,
     roleStore,
+    decisionStore,
     eventBus,
     taskService,
     agentService,
@@ -159,6 +166,7 @@ export async function buildLightContainer(context: CliContext): Promise<LightCon
     teamService,
     quotaService,
     roleService,
+    decisionService,
   };
 }
 
@@ -191,6 +199,7 @@ export async function buildFullContainer(context: CliContext): Promise<Container
     { Orchestrator },
     { DoctorService },
     { ReviewGate },
+    { ensureCliShim, cliEntryFromArgv },
   ] = await Promise.all([
     import('./infrastructure/process/process-manager.js'),
     import('./infrastructure/adapters/registry.js'),
@@ -208,6 +217,7 @@ export async function buildFullContainer(context: CliContext): Promise<Container
     import('./application/orchestrator.js'),
     import('./application/doctor-service.js'),
     import('./application/review-gate.js'),
+    import('./infrastructure/process/cli-shim.js'),
   ]);
 
   const processManager = new ProcessManager();
@@ -250,6 +260,13 @@ export async function buildFullContainer(context: CliContext): Promise<Container
     skillLoader,
     quotaStore: light.quotaStore,
     roleService: light.roleService,
+    decisionService: light.decisionService,
+    // `orch` launchers for agents (so they can request decisions), when running from the orch CLI.
+    prepareAgentBin: async () => {
+      const entry = cliEntryFromArgv();
+      if (!entry) return undefined;
+      return ensureCliShim({ binDir: light.paths.binDir, execPath: process.execPath, execArgv: process.execArgv, entry });
+    },
     config: light.config,
     projectRoot: context.projectRoot,
     lockPath: light.paths.lockPath,

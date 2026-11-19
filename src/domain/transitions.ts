@@ -6,6 +6,8 @@
  *                      ↘ retrying → in_progress
  *                      ↘ failed (max attempts)
  *   review → todo (rejected)
+ *   todo | in_progress | retrying | review → waiting_decision (a human must decide)
+ *   waiting_decision → todo (continue) | review (approve) | cancelled
  *   * → cancelled
  *   failed → todo | retrying (manual reactivation)
  *   cancelled → todo (manual reactivation)
@@ -17,10 +19,11 @@
 import type { Task, TaskStatus } from './task.js';
 
 const VALID_TRANSITIONS: Record<TaskStatus, readonly TaskStatus[]> = {
-  todo: ['in_progress', 'cancelled'],
-  in_progress: ['review', 'retrying', 'failed', 'cancelled'],
-  retrying: ['in_progress', 'failed', 'cancelled'],
-  review: ['done', 'todo', 'cancelled'],
+  todo: ['in_progress', 'waiting_decision', 'cancelled'],
+  in_progress: ['review', 'retrying', 'failed', 'waiting_decision', 'cancelled'],
+  retrying: ['in_progress', 'failed', 'waiting_decision', 'cancelled'],
+  review: ['done', 'todo', 'waiting_decision', 'cancelled'],
+  waiting_decision: ['todo', 'review', 'cancelled'],
   done: [],
   failed: ['todo', 'retrying'],
   cancelled: ['todo'],

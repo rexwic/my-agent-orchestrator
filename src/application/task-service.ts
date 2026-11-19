@@ -70,7 +70,8 @@ export class TaskService {
       id: `tsk_${nanoid(7)}`,
       title: input.title.trim(),
       description: input.description?.trim() ?? '',
-      status: 'todo',
+      // Gate: held until a human answers the decision requested on it.
+      status: input.needs_decision ? 'waiting_decision' : 'todo',
       priority,
       ...(roleName ? { role: roleName } : {}),
       assignee,
