@@ -13,6 +13,13 @@ import { execFile } from 'node:child_process';
 import { resolveCommand } from '../infrastructure/process/resolve-command.js';
 
 const PACKAGE_NAME = '@oxgeneral/orch';
+
+/**
+ * Private fork: never check npm for upstream releases and never install them
+ * (an install would replace this fork with upstream). Update the fork with
+ * git instead — see `orch update`.
+ */
+export const UPSTREAM_UPDATES_DISABLED = true;
 const CACHE_DIR = path.join(os.homedir(), '.orchestry');
 const CACHE_FILE = path.join(CACHE_DIR, 'update-check.json');
 const CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000; // 4 hours
@@ -88,6 +95,7 @@ function buildUpdateInfo(current: string, latest: string): UpdateInfo {
  * Used by `orch update` command.
  */
 export async function checkForUpdateNow(currentVersion: string): Promise<UpdateInfo | null> {
+  if (UPSTREAM_UPDATES_DISABLED) return null;
   const latest = await fetchLatestVersion();
   if (!latest) return null;
   await writeCache(latest).catch(() => {});
@@ -100,6 +108,7 @@ export async function checkForUpdateNow(currentVersion: string): Promise<UpdateI
  * On cold start (no cache), awaits the fetch so the first run also gets a result.
  */
 export async function checkForUpdateSWR(currentVersion: string): Promise<UpdateInfo | null> {
+  if (UPSTREAM_UPDATES_DISABLED) return null;
   try {
     const cached = await readCache();
     if (!cached) {
@@ -132,6 +141,7 @@ const INSTALL_MARKER = path.join(CACHE_DIR, 'update-installed.json');
  * Returns true if install completed successfully, false if skipped or failed.
  */
 export function backgroundInstall(version: string): Promise<boolean> {
+  if (UPSTREAM_UPDATES_DISABLED) return Promise.resolve(false);
   return new Promise((resolve) => {
     // Skip if already installed this version
     try {
