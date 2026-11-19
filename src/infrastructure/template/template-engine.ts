@@ -63,6 +63,14 @@ export interface PromptContext {
   feedback?: string;
   /** Decisions a human made that this agent must follow. */
   decisions?: Array<{ question: string; answer: string; project_wide: boolean }>;
+  /** Planning task (`orch plan`): roles to plan with, limits, the plan sent back. */
+  planning?: {
+    plan_id: string;
+    revision: number;
+    max_tasks: number;
+    roles: Array<{ name: string; description?: string; agents: number }>;
+    previous_plan?: string;
+  };
   shared_context?: Record<string, string>;
   messages?: Array<{
     id: string;
@@ -244,6 +252,7 @@ export interface BuildPromptOptions {
   messages?: import('../../domain/message.js').Message[];
   goal?: GoalContext;
   decisions?: PromptContext['decisions'];
+  planning?: PromptContext['planning'];
 }
 
 export function buildPromptContext(
@@ -254,7 +263,7 @@ export function buildPromptContext(
   config: OrchestratorConfig,
   options?: BuildPromptOptions,
 ): PromptContext {
-  const { allAgents, retryContext, sharedContext, feedback, messages: rawMessages, goal, decisions } = options ?? {};
+  const { allAgents, retryContext, sharedContext, feedback, messages: rawMessages, goal, decisions, planning } = options ?? {};
 
   // Map messages to prompt-friendly shape
   const agentById = new Map((allAgents ?? []).map((a) => [a.id, a]));
@@ -300,6 +309,7 @@ export function buildPromptContext(
     retry: attempt > 1 ? retryContext : undefined,
     feedback,
     decisions: decisions?.length ? decisions : undefined,
+    planning,
     shared_context: sharedContext && Object.keys(sharedContext).length > 0
       ? filterRelevantContext(sharedContext, {
           agentName: agent.name,
@@ -408,6 +418,54 @@ This task was sent back or paused earlier (by a review, ORCH, or a human decisio
 A human made these decisions. Follow them and do not reopen them:
 {% for d in decisions %}- {{ d.question }} → **{{ d.answer }}**{% if d.project_wide %} (project-wide){% endif %}
 {% endfor %}
+{% endif %}
+
+{% if planning %}
+## Your job: plan the work, do not implement it
+The task above is a requirement. Turn it into a plan of tasks for the team. Read the code to understand what exists, but do NOT change project files and do NOT create tasks with \`orch task add\` — submit a plan instead; a human approves it and ORCH creates the tasks.
+
+**Roles you can assign** (only these; if the work needs a role that does not exist, ask with \`orch decision request\` instead of inventing one):
+{% for r in planning.roles %}- \`{{ r.name }}\` ({{ r.agents }} agent{% if r.agents != 1 %}s{% endif %}){% if r.description %} — {{ r.description }}{% endif %}
+{% endfor %}
+**Planning rules:**
+- One task = one role, small enough for one agent run. Put the acceptance criteria in its description.
+- When frontend and backend both take part, the first task defines the API contract (e.g. an OpenAPI file); both sides depend on it and follow it — it settles disagreements.
+- Give tasks that can run in parallel non-overlapping \`scope\` (the files they may change) so they do not conflict.
+- Use \`depends_on\` only for real ordering needs; independent tasks run in parallel.
+- \`review_criteria\` (test_pass, typecheck, lint) are checked automatically before a task is merged.
+- Mark risky tasks (schema or data migrations, deleting features, security changes) with \`needs_decision: true\`: a human confirms before they start.
+- At most {{ planning.max_tasks }} tasks. If the requirement is bigger, plan a first phase.
+
+**Plan file (YAML):**
+\`\`\`yaml
+goal: Order discounts                # one line: what the plan achieves
+summary: Contract first, then backend and frontend in parallel, then QA
+tasks:
+  - key: api-contract                # your name for the task, used by depends_on
+    title: Define the discount API contract
+    role: backend
+    description: |
+      What to do ...
+      Acceptance criteria: ...
+    scope: [docs/api/discount.yaml]
+  - key: be-discount
+    title: Implement the discount API
+    role: backend
+    depends_on: [api-contract]       # keys in this plan, or existing task IDs
+    scope: ["src/main/java/**/discount/**"]
+    review_criteria: [test_pass]
+    priority: 2                      # 1 (urgent) - 4, optional
+    needs_decision: false            # optional
+\`\`\`
+
+**Submit:** write the plan to \`plan.yml\` in your working directory and run \`orch plan submit plan.yml\`. If it reports problems, fix them and submit again. Once it is accepted, end your run with a short summary — a human reviews the plan.
+{% if planning.previous_plan %}
+## Your previous plan (revision {{ planning.revision | minus: 1 }}, sent back)
+The human's feedback is under Review Feedback above.
+\`\`\`yaml
+{{ planning.previous_plan }}
+\`\`\`
+{% endif %}
 {% endif %}
 
 ## When a human must decide

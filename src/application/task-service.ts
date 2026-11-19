@@ -85,6 +85,7 @@ export class TaskService {
       review_criteria: input.review_criteria ?? roleDefaults?.review_criteria,
       scope: input.scope,
       goalId: input.goalId,
+      ...(input.plan_id ? { plan_id: input.plan_id } : {}),
     };
 
     if (input.attachments?.length && this.paths) {

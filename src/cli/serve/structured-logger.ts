@@ -155,6 +155,18 @@ export class StructuredLogger {
       case 'task:approved':
         return { ts, level: 'info', event: event.type, taskId: event.taskId };
 
+      case 'plan:submitted':
+        return { ts, level: 'warn', event: event.type, planId: event.planId, revision: event.revision, tasks: event.tasks, decisionId: event.decisionId };
+
+      case 'plan:approved':
+        return { ts, level: 'info', event: event.type, planId: event.planId, goalId: event.goalId, taskIds: event.taskIds };
+
+      case 'plan:revised':
+        return { ts, level: 'info', event: event.type, planId: event.planId, revision: event.revision, taskId: event.taskId };
+
+      case 'plan:cancelled':
+        return { ts, level: 'info', event: event.type, planId: event.planId };
+
       case 'task:synced':
         return { ts, level: 'info', event: event.type, taskId: event.taskId, target: event.target, sha: event.sha, merged: event.merged };
 

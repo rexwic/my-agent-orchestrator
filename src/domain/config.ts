@@ -62,6 +62,13 @@ export interface ReviewConfig {
   commands: Partial<Record<ReviewCriterion, PlatformCommand>>;
 }
 
+export interface PlannerConfig {
+  /** Role that plans (default "planner"). */
+  role?: string;
+  /** Most tasks one plan may have (default 30). */
+  max_tasks?: number;
+}
+
 export interface OrchestratorConfig {
   project: ProjectConfig;
   defaults: {
@@ -71,6 +78,8 @@ export interface OrchestratorConfig {
   scheduling: SchedulingConfig;
   /** Auto-review (review_criteria) settings. Optional for configs written before it existed. */
   review?: ReviewConfig;
+  /** `orch plan`: planner role and plan size limit. */
+  planner?: PlannerConfig;
   prompt?: {
     template?: string;
     system_template?: string;
@@ -107,5 +116,9 @@ export const DEFAULT_CONFIG: OrchestratorConfig = {
     max_parallel: 1,
     max_send_backs: 3,
     commands: {},
+  },
+  planner: {
+    role: 'planner',
+    max_tasks: 30,
   },
 };

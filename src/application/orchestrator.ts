@@ -81,6 +81,8 @@ export interface OrchestratorDeps {
   roleService?: RoleService;
   /** Human decisions: escalations, agent questions, binding answers in prompts. */
   decisionService?: DecisionService;
+  /** Plans: planner prompts, and how a planning task's run ends. */
+  planService?: import('./plan-service.js').PlanService;
   /** Prepares a directory with an `orch` launcher to put first on agents' PATH. */
   prepareAgentBin?: () => Promise<string | undefined>;
   config: OrchestratorConfig;
@@ -1248,13 +1250,16 @@ export class Orchestrator {
       }
 
       const decisions = await this.bindingDecisions(task);
+      const planning = task.plan_id && this.deps.planService
+        ? await this.deps.planService.promptContext(task).catch(() => undefined)
+        : undefined;
       const context = buildPromptContext(
         task,
         agent,
         attempt,
         workspacePath,
         this.deps.config,
-        { allAgents, retryContext, sharedContext, feedback: task.feedback, messages: pendingMessages.length ? pendingMessages : undefined, goal: goalContext, decisions },
+        { allAgents, retryContext, sharedContext, feedback: task.feedback, messages: pendingMessages.length ? pendingMessages : undefined, goal: goalContext, decisions, planning },
       );
 
       // Render prompt(s) — split mode for caching, legacy mode for backward compat
@@ -1647,6 +1652,17 @@ export class Orchestrator {
     const task = await this.deps.taskStore.get(taskId);
     if (!task) return;
 
+    // A planner that ended without submitting its plan failed (it is retried).
+    const pendingDecision = await this.hasPendingDecision(taskId);
+    const isPlanning = Boolean(task.plan_id && this.deps.planService);
+    if (isPlanning && !pendingDecision && await this.deps.planService!.planningRunOutcome(task) === 'missing') {
+      return this._handleRunFailure(
+        taskId,
+        state.running[taskId]!,
+        'The planner ended its run without submitting a plan. Write the plan file and run: orch plan submit <file>',
+      ).then(() => undefined);
+    }
+
     // Worktree tasks are committed, synced with main and reviewed by the
     // IntegrationService after the lock is released (files_changed is filled in
     // there from the committed branch if the adapter reported none).
@@ -1670,9 +1686,10 @@ export class Orchestrator {
     const autoApprove = isAutonomousTask || agent?.config.approval_policy === 'auto';
 
     // An agent that asked a human (orch decision request) waits for the answer.
-    const newStatus: import('../domain/task.js').TaskStatus = await this.hasPendingDecision(taskId)
+    // A planning task is finished once its plan is submitted (review → done below).
+    const newStatus: import('../domain/task.js').TaskStatus = pendingDecision
       ? 'waiting_decision'
-      : resolveCompletionStatus(task, true, autoApprove);
+      : isPlanning ? 'review' : resolveCompletionStatus(task, true, autoApprove);
 
     // Finish run first (emits agent:completed)
     await this.deps.runService.finish(runId, 'succeeded', tokens);
@@ -1760,7 +1777,9 @@ export class Orchestrator {
     // Worktree tasks first get main merged in (IntegrationService). Git and review
     // work runs after the lock is released (see handleRunSuccess).
     let pendingReview: PendingCompletion | undefined;
-    if (newStatus === 'review') {
+    if (isPlanning && newStatus === 'review') {
+      await this.finishPlanningTask(task);
+    } else if (newStatus === 'review') {
       if (isWorktree) {
         pendingReview = { kind: 'integrate', autoApprove };
       } else if (task.review_criteria?.length) {
@@ -1867,6 +1886,13 @@ export class Orchestrator {
     const task = await this.deps.taskStore.get(taskId);
     if (!task) return;
 
+    // A planner that submitted its plan and then crashed still did its job.
+    if (task.plan_id && this.deps.planService && !(await this.hasPendingDecision(taskId))
+      && await this.deps.planService.planningRunOutcome(task) === 'submitted') {
+      await this._handleRunSuccess(taskId, entry.run_id, entry.agent_id);
+      return;
+    }
+
     await this.deps.runService.finish(entry.run_id, 'failed', undefined, error);
     await this.deps.agentService.setStatus(entry.agent_id, 'idle');
 
@@ -1957,6 +1983,31 @@ export class Orchestrator {
       // Reactive dispatch — agent is idle, try to assign next task immediately
       this.scheduleImmediateDispatch();
     }
+  }
+
+  /**
+   * Planning task done: the plan is with a human (or already decided). The
+   * planner only read code, so its worktree is removed without merging.
+   */
+  private async finishPlanningTask(task: Task): Promise<void> {
+    if (task.proof?.branch || task.workspace) {
+      await this.deps.workspaceManager.cleanup(task.id, task.proof?.branch).catch((err) => {
+        this.deps.eventBus.emit({
+          type: 'orchestrator:error',
+          error: err instanceof Error ? err.message : String(err),
+          context: `workspace cleanup for planning task ${task.id}`,
+          fatal: false,
+        });
+      });
+    }
+    await this.deps.taskService.updateStatus(task.id, 'done').catch((err) => {
+      this.deps.eventBus.emit({
+        type: 'orchestrator:error',
+        error: err instanceof Error ? err.message : String(err),
+        context: `finishing planning task ${task.id}`,
+        fatal: false,
+      });
+    });
   }
 
   private async hasPendingDecision(taskId: string): Promise<boolean> {

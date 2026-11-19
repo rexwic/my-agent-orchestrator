@@ -71,6 +71,8 @@ export interface Task {
   send_backs?: number;
   goalId?: string;
   attachments?: string[];
+  /** Planning task of this plan (the planner submits the plan; it never merges code). */
+  plan_id?: string;
 }
 
 export interface CreateTaskInput {
@@ -89,4 +91,6 @@ export interface CreateTaskInput {
   attachments?: string[];
   /** Create the task in waiting_decision: a human approves before it starts. */
   needs_decision?: boolean;
+  /** Makes it the planning task of this plan. */
+  plan_id?: string;
 }

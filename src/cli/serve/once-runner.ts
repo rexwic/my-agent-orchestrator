@@ -29,6 +29,8 @@ export async function runOnce(
   taskStore: ITaskStore,
   eventBus: EventBus,
   pollIntervalMs = 2000,
+  /** Pending decisions not tied to a task (e.g. a plan awaiting approval). */
+  pendingDecisions?: () => Promise<number>,
 ): Promise<OnceResult> {
   // Start watch loop with autonomous seeding disabled
   await orchestrator.startWatch({ skipAutonomousSeeding: true });
@@ -49,7 +51,8 @@ export async function runOnce(
 
     const hasFailed = finalTasks.some((t) => t.status === 'failed');
     if (hasFailed) return 'has_failed';
-    return finalTasks.some((t) => t.status === 'waiting_decision') ? 'needs_decision' : 'all_done';
+    if (finalTasks.some((t) => t.status === 'waiting_decision')) return 'needs_decision';
+    return (await pendingDecisions?.().catch(() => 0)) ? 'needs_decision' : 'all_done';
   } finally {
     unsubShutdown();
   }

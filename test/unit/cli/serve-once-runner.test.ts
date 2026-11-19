@@ -71,6 +71,14 @@ describe('runOnce', () => {
     expect(orchestrator.stop).toHaveBeenCalled();
   });
 
+  it('stops with needs_decision when a decision without a task is pending (a plan awaiting approval)', async () => {
+    const orchestrator = makeOrchestrator();
+    const taskStore = makeTaskStore([{ id: 'tsk_plan', status: 'done' }]);
+
+    expect(await runOnce(orchestrator, taskStore, new EventBus(), 10, async () => 1)).toBe('needs_decision');
+    expect(await runOnce(makeOrchestrator(), taskStore, new EventBus(), 10, async () => 0)).toBe('all_done');
+  });
+
   it('returns has_failed when any task is failed', async () => {
     const orchestrator = makeOrchestrator();
     const taskStore = makeTaskStore([

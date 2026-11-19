@@ -20,6 +20,7 @@ const SOURCE_LABEL: Record<Decision['source'], string> = {
   escalation: 'loop limit',
   agent: 'agent asked',
   gate: 'gate',
+  plan: 'plan',
 };
 
 const collect = (value: string, previous: string[] = []): string[] => [...previous, value];
@@ -127,7 +128,7 @@ export function registerDecisionCommand(program: Command, container: LightContai
     .description('Answer a pending decision; the task continues (or is approved / cancelled)')
     .option('-c, --choose <option>', 'One of the options (its text or number)')
     .option('-m, --message <text>', 'Your answer / instructions')
-    .option('--approve', 'Approve the task as it is (it is synced, verified and merged)')
+    .option('--approve', 'Approve: a task as it is (synced, verified, merged), a gate (it starts), a plan (its tasks are created)')
     .option('--cancel', 'Cancel the task')
     .option('--project', 'A project-wide rule: every agent sees it from now on')
     .action(async (id: string, opts) => {
@@ -146,6 +147,11 @@ export function registerDecisionCommand(program: Command, container: LightContai
       }
       const taskId = result.decision.task_id;
       printSuccess(`Answered ${id}: ${describeAnswer(result.decision)}${opts.project ? ' (project-wide)' : ''}`);
+      if (result.decision.plan_id) {
+        const { describePlanOutcome } = await import('./plan.js');
+        console.log(describePlanOutcome(await container.planService.get(result.decision.plan_id)));
+        return;
+      }
       if (!taskId) return;
       if (result.stillPending > 0) {
         console.log(`  Task ${taskId} still waits for ${result.stillPending} other decision(s).`);
@@ -155,9 +161,9 @@ export function registerDecisionCommand(program: Command, container: LightContai
         console.log(dim(`  Task ${taskId} was not waiting for a decision; the answer is recorded for its next run.`));
         return;
       }
-      if (action === 'continue') console.log(`  Task ${taskId} → todo (an agent continues with your answer)`);
-      if (action === 'cancel') console.log(`  Task ${taskId} → cancelled`);
-      if (action === 'approve') {
+      if (result.task.status === 'todo') console.log(`  Task ${taskId} → todo (an agent ${action === 'approve' ? 'starts it' : 'continues with your answer'})`);
+      if (result.task.status === 'cancelled') console.log(`  Task ${taskId} → cancelled`);
+      if (result.task.status === 'review' && result.task.approved) {
         // Integration (sync main, review, merge) needs the full container.
         const { buildFullContainer } = await import('../../container.js');
         const full = await buildFullContainer(container.context);

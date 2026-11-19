@@ -9,7 +9,7 @@
 
 import type { OrchestratorConfig } from './domain/config.js';
 import type { CliContext } from './cli/context.js';
-import type { ITaskStore, IAgentStore, IRunStore, IStateStore, IConfigStore, IContextStore, IMessageStore, IGoalStore, ITeamStore, IQuotaStore, IRoleStore, IDecisionStore } from './infrastructure/storage/interfaces.js';
+import type { ITaskStore, IAgentStore, IRunStore, IStateStore, IConfigStore, IContextStore, IMessageStore, IGoalStore, ITeamStore, IQuotaStore, IRoleStore, IDecisionStore, IPlanStore } from './infrastructure/storage/interfaces.js';
 import type { IWorkspaceManager } from './infrastructure/workspace/interface.js';
 import type { ITemplateEngine } from './infrastructure/template/template-engine.js';
 import type { IProcessManager } from './infrastructure/process/process-manager.js';
@@ -31,6 +31,7 @@ import { TeamStore } from './infrastructure/storage/team-store.js';
 import { QuotaStore } from './infrastructure/storage/quota-store.js';
 import { RoleStore } from './infrastructure/storage/role-store.js';
 import { DecisionStore } from './infrastructure/storage/decision-store.js';
+import { PlanStore } from './infrastructure/storage/plan-store.js';
 
 import { EventBus } from './application/event-bus.js';
 import { TaskService } from './application/task-service.js';
@@ -42,6 +43,7 @@ import { TeamService } from './application/team-service.js';
 import { QuotaService } from './application/quota-service.js';
 import { RoleService } from './application/role-service.js';
 import { DecisionService } from './application/decision-service.js';
+import { PlanService } from './application/plan-service.js';
 
 import type { Orchestrator } from './application/orchestrator.js';
 import type { DoctorService } from './application/doctor-service.js';
@@ -69,6 +71,7 @@ export interface LightContainer {
   quotaStore: IQuotaStore;
   roleStore: IRoleStore;
   decisionStore: IDecisionStore;
+  planStore: IPlanStore;
 
   // Application — services only
   eventBus: EventBus;
@@ -83,6 +86,7 @@ export interface LightContainer {
   /** Roles (.orchestry/roles/*.yml) and their agent instances. */
   roleService: RoleService;
   decisionService: DecisionService;
+  planService: PlanService;
 }
 
 /** Full container — everything from light + orchestrator, adapters, workspace, template. */
@@ -126,6 +130,7 @@ export async function buildLightContainer(context: CliContext): Promise<LightCon
   const quotaStore = new QuotaStore(paths);
   const roleStore = new RoleStore(paths);
   const decisionStore = new DecisionStore(paths);
+  const planStore = new PlanStore(paths);
 
   // Application — services
   const eventBus = new EventBus();
@@ -138,6 +143,8 @@ export async function buildLightContainer(context: CliContext): Promise<LightCon
   const quotaService = new QuotaService(quotaStore, eventBus);
   const roleService = new RoleService(roleStore, agentStore, eventBus, config);
   const decisionService = new DecisionService(decisionStore, taskStore, taskService, eventBus);
+  // Registers itself on decisionService: answering a plan's decision approves / revises / cancels it.
+  const planService = new PlanService({ store: planStore, taskStore, taskService, goalService, decisionService, roleStore, eventBus, config });
 
   return {
     context,
@@ -157,6 +164,7 @@ export async function buildLightContainer(context: CliContext): Promise<LightCon
     quotaStore,
     roleStore,
     decisionStore,
+    planStore,
     eventBus,
     taskService,
     agentService,
@@ -167,6 +175,7 @@ export async function buildLightContainer(context: CliContext): Promise<LightCon
     quotaService,
     roleService,
     decisionService,
+    planService,
   };
 }
 
@@ -261,6 +270,7 @@ export async function buildFullContainer(context: CliContext): Promise<Container
     quotaStore: light.quotaStore,
     roleService: light.roleService,
     decisionService: light.decisionService,
+    planService: light.planService,
     // `orch` launchers for agents (so they can request decisions), when running from the orch CLI.
     prepareAgentBin: async () => {
       const entry = cliEntryFromArgv();

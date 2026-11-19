@@ -564,6 +564,30 @@ describe('system/user template split', () => {
     expect(rendered).toContain('tsk_dec');
   });
 
+  it('user template gives a planning task its roles, rules, format and the plan sent back', async () => {
+    const ctx = buildPromptContext(makeTask({ id: 'tsk_pl' }), makeAgent(), 1, '/workspace', DEFAULT_CONFIG, {
+      planning: {
+        plan_id: 'pln_1', revision: 2, max_tasks: 12,
+        roles: [{ name: 'backend', description: 'Java/Spring', agents: 2 }, { name: 'qa', agents: 1 }],
+        previous_plan: 'goal: Old goal',
+      },
+    });
+    const rendered = await engine.render(DEFAULT_USER_TEMPLATE, ctx);
+    expect(rendered).toContain('## Your job: plan the work, do not implement it');
+    expect(rendered).toContain('- `backend` (2 agents) — Java/Spring');
+    expect(rendered).toMatch(/- `qa` \(1 agent\)\r?\n/);
+    expect(rendered).toContain('At most 12 tasks');
+    expect(rendered).toContain('orch plan submit plan.yml');
+    expect(rendered).toContain('API contract');
+    expect(rendered).toContain('## Your previous plan (revision 1, sent back)');
+    expect(rendered).toContain('goal: Old goal');
+  });
+
+  it('user template has no planning section for other tasks', async () => {
+    const rendered = await engine.render(DEFAULT_USER_TEMPLATE, buildPromptContext(makeTask(), makeAgent(), 1, '/workspace', DEFAULT_CONFIG));
+    expect(rendered).not.toContain('Your job: plan');
+  });
+
   it('user template has no decisions section when there are none', async () => {
     const rendered = await engine.render(DEFAULT_USER_TEMPLATE, buildPromptContext(makeTask(), makeAgent(), 1, '/workspace', DEFAULT_CONFIG));
     expect(rendered).not.toContain('## Decisions (binding)');

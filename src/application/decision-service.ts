@@ -5,8 +5,11 @@
  * that is running is moved there by the orchestrator when its run ends).
  * Answering applies the action once no other decision on the task is pending:
  *   continue → todo, with the answer as feedback (send-back count reset)
- *   approve  → review + approved (the orchestrator integrates it)
+ *   approve  → review + approved (the orchestrator integrates it); for a gate
+ *              (a task that has not started) → todo: it starts
  *   cancel   → cancelled
+ * Answer hooks (e.g. plans) run before an answer is recorded; if one throws,
+ * the decision stays pending.
  * Answered decisions are given to later agents (bindingFor).
  */
 
@@ -37,13 +40,23 @@ export interface AnswerResult {
   stillPending: number;
 }
 
+/** Runs when a decision is answered, before the answer is recorded (throw to reject it). */
+export type DecisionAnswerHook = (decision: Decision) => Promise<void>;
+
 export class DecisionService {
+  private readonly answerHooks: DecisionAnswerHook[] = [];
+
   constructor(
     private readonly store: IDecisionStore,
     private readonly taskStore: ITaskStore,
     private readonly taskService: TaskService,
     private readonly eventBus: EventBus,
   ) {}
+
+  /** Register a hook run on every answer (see DecisionAnswerHook). */
+  onAnswer(hook: DecisionAnswerHook): void {
+    this.answerHooks.push(hook);
+  }
 
   async request(input: DecisionRequest): Promise<Decision> {
     const req = normalizeDecisionRequest(input);
@@ -61,6 +74,7 @@ export class DecisionService {
       status: 'pending',
       source: req.source,
       ...(req.task_id ? { task_id: req.task_id } : {}),
+      ...(req.plan_id ? { plan_id: req.plan_id } : {}),
       question: req.question,
       options: req.options,
       ...(req.context ? { context: req.context } : {}),
@@ -95,6 +109,22 @@ export class DecisionService {
       (!filter.status || d.status === filter.status) && (!filter.taskId || d.task_id === filter.taskId));
   }
 
+  /** Update the question/background of a pending decision (e.g. a plan submitted again). */
+  async refresh(id: string, fields: { question?: string; context?: string }): Promise<Decision> {
+    const decision = await this.get(id);
+    if (decision.status !== 'pending') throw new InvalidArgumentsError(`${id} was already answered`);
+    const req = normalizeDecisionRequest({
+      source: decision.source,
+      question: fields.question ?? decision.question,
+      options: decision.options,
+      context: fields.context ?? decision.context,
+    });
+    decision.question = req.question;
+    if (req.context) decision.context = req.context;
+    await this.store.save(decision);
+    return decision;
+  }
+
   async pendingFor(taskId: string): Promise<Decision[]> {
     return this.list({ status: 'pending', taskId });
   }
@@ -106,6 +136,7 @@ export class DecisionService {
     }
     decision.answer = resolveDecisionAnswer(decision, input);
     decision.status = 'answered';
+    for (const hook of this.answerHooks) await hook(structuredClone(decision));
     await this.store.save(decision);
     this.eventBus.emit({
       type: 'decision:answered',
@@ -140,6 +171,14 @@ export class DecisionService {
   private async apply(task: Task, decision: Decision): Promise<Task> {
     const action = decision.answer!.action;
     if (action === 'cancel') return this.taskService.updateStatus(task.id, 'cancelled');
+
+    if (action === 'approve' && decision.source === 'gate') {
+      // Approving a gate starts the task (it has no work to merge yet).
+      if (decision.answer!.choice || decision.answer!.message) task.feedback = buildDecisionFeedback(decision);
+      task.updated_at = new Date().toISOString();
+      await this.taskStore.save(task);
+      return this.taskService.updateStatus(task.id, 'todo');
+    }
 
     if (action === 'approve') {
       task.approved = true;

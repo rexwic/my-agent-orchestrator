@@ -70,6 +70,13 @@ export interface IDecisionStore {
   list(): Promise<import('../../domain/decision.js').Decision[]>;
 }
 
+export interface IPlanStore {
+  save(plan: import('../../domain/plan.js').Plan): Promise<void>;
+  get(id: string): Promise<import('../../domain/plan.js').Plan | null>;
+  /** All plans, oldest first. */
+  list(): Promise<import('../../domain/plan.js').Plan[]>;
+}
+
 export interface IQuotaStore {
   read(): Promise<import('../../domain/quota.js').QuotaState>;
   write(state: import('../../domain/quota.js').QuotaState): Promise<void>;

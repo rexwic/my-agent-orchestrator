@@ -19,7 +19,9 @@ export type DecisionSource =
   /** An agent asked (`orch decision request`). */
   | 'agent'
   /** The task was created with `--needs-decision`. */
-  | 'gate';
+  | 'gate'
+  /** A planner submitted a plan: approve it, send it back with feedback, or cancel it. */
+  | 'plan';
 
 /** What happens to the task once answered. */
 export type DecisionAction = 'continue' | 'approve' | 'cancel';
@@ -41,6 +43,8 @@ export interface Decision {
   status: DecisionStatus;
   source: DecisionSource;
   task_id?: string;
+  /** Plan this decision approves (source 'plan'). */
+  plan_id?: string;
   question: string;
   options: string[];
   /** Background for the human (and for the agent when it continues): loop history, test output… */
@@ -53,6 +57,7 @@ export interface Decision {
 
 export interface DecisionRequest {
   task_id?: string;
+  plan_id?: string;
   question: string;
   options?: string[];
   context?: string;
