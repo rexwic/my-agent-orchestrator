@@ -97,3 +97,28 @@ describe('PrdService drafts', () => {
     expect(ctx!.content).toHaveLength(30_000);
   });
 });
+
+describe('PrdService changes after work was done', () => {
+  it('lists done tasks built on an older version and plans only the change', async () => {
+    const { service, taskStore } = setup();
+    const v1 = await service.add({ name: 'discount', content: '1. percent' });
+    const save = (id: string, status: 'done' | 'todo', at: string, prd = 'discount') =>
+      taskStore.save({ id, title: id, description: '', status, priority: 3, labels: [], depends_on: [], created_at: at, updated_at: at, attempts: 1, max_attempts: 3, prd });
+    await save('tsk_old', 'done', '2000-01-01T00:00:00.000Z');
+    await save('tsk_open', 'todo', '2000-01-01T00:00:00.000Z');
+    await save('tsk_other', 'done', '2000-01-01T00:00:00.000Z', 'other');
+    await save('tsk_new', 'done', '2999-01-01T00:00:00.000Z');
+    await service.add({ name: 'discount', content: '1. percent\n2. cap', createdBy: 'pm-1' });
+
+    expect((await service.doneBefore('discount', 2)).map((t) => t.id)).toEqual(['tsk_old']);
+
+    const { requirement, latest, done } = await service.changeRequirement('discount', v1.version, '+2. cap');
+    expect(latest.version).toBe(2);
+    expect(done.map((t) => t.id)).toEqual(['tsk_old']);
+    expect(requirement).toContain('PRD discount changed since v1 (now v2). Plan only the work these changes need');
+    expect(requirement).toContain('~~~~diff\n+2. cap\n~~~~');
+    expect(requirement).toContain('- tsk_old tsk_old');
+    expect(requirement).toMatch(/## The whole PRD \(v2\)\n1\. percent\n2\. cap$/);
+    await expect(service.changeRequirement('discount', 2, '')).rejects.toThrow(/no version after v2/);
+  });
+});

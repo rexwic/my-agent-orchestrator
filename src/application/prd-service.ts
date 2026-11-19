@@ -149,6 +149,47 @@ export class PrdService {
     }
   }
 
+  /**
+   * Done tasks that implement the PRD and finished before `version` existed
+   * (so they were built on an older version), oldest first.
+   */
+  async doneBefore(name: string, version: number): Promise<Task[]> {
+    const v = await this.deps.store.get(name, version);
+    if (!v) return [];
+    return (await this.deps.taskService.list({ status: 'done' }))
+      .filter((t) => t.prd === name && t.updated_at < v.created_at)
+      .sort((a, b) => a.updated_at.localeCompare(b.updated_at));
+  }
+
+  /**
+   * Requirement for planning only what changed in the PRD since `since`: the
+   * changes, the done tasks built on an older version, and the whole latest PRD.
+   * `diff` is the text diff of v`since` → latest (made by the caller).
+   */
+  async changeRequirement(name: string, since: number, diff: string): Promise<{ requirement: string; latest: PrdVersion; done: Task[] }> {
+    const latest = await this.get(name);
+    await this.get(name, since);
+    if (since >= latest.version) {
+      throw new InvalidArgumentsError(`${name} has no version after v${since} (latest: v${latest.version})`);
+    }
+    const done = await this.doneBefore(name, since + 1);
+    const requirement = [
+      `PRD ${name} changed since v${since} (now v${latest.version}). Plan only the work these changes need: the tasks listed below are done and were built on an older version — change them only where the PRD now asks for something else (read their delivery reports with \`orch task show <id>\`).`,
+      '',
+      `## Changes (v${since} → v${latest.version})`,
+      '~~~~diff',
+      diff.trim(),
+      '~~~~',
+      '',
+      '## Done tasks built on an older version',
+      ...(done.length ? done.map((t) => `- ${t.id} ${t.title}`) : ['(none)']),
+      '',
+      `## The whole PRD (v${latest.version})`,
+      latest.content,
+    ].join('\n');
+    return { requirement, latest, done };
+  }
+
   /** Give the PM a task to write a PRD (or the next version of an existing one). */
   async startDraft(input: { requirement: string; name?: string; title?: string }): Promise<{ name: string; task: Task }> {
     const requirement = input.requirement.trim();

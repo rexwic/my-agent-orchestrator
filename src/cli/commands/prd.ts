@@ -14,6 +14,7 @@ import type { LightContainer } from '../../container.js';
 import { InvalidArgumentsError } from '../../domain/errors.js';
 import type { PrdVersion } from '../../domain/prd.js';
 import { printSuccess, printTable, printKeyValue, dim, amber, truncateToWidth } from '../output.js';
+import { textDiff } from '../text-diff.js';
 
 async function readSource(file: string): Promise<string> {
   if (file === '-') {
@@ -145,28 +146,13 @@ export function registerPrdCommand(program: Command, container: LightContainer):
       console.log(`  ${dim('from')} ${versionLine(fromV)}\n  ${dim('to  ')} ${versionLine(toV)}\n`);
       process.stdout.write(await textDiff(fromV.content, toV.content, `v${fromV.version}`, `v${toV.version}`));
       if (isHuman()) await container.prdService.markSeen(name, toV.version);
-    });
-}
 
-/** Unified diff of two texts (git diff --no-index), or both texts when git is unavailable. */
-async function textDiff(a: string, b: string, labelA: string, labelB: string): Promise<string> {
-  const fs = await import('node:fs/promises');
-  const os = await import('node:os');
-  const path = await import('node:path');
-  const { execFile } = await import('node:child_process');
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'orch-prd-'));
-  try {
-    await fs.writeFile(path.join(dir, labelA), `${a}\n`);
-    await fs.writeFile(path.join(dir, labelB), `${b}\n`);
-    const out = await new Promise<string | null>((resolve) => {
-      execFile('git', ['diff', '--no-index', '--no-color', labelA, labelB], { cwd: dir, maxBuffer: 16 * 1024 * 1024 }, (err, stdout) => {
-        // Exit code 1 means "different".
-        resolve(err && (err as { code?: unknown }).code !== 1 ? null : stdout);
-      });
+      // Work finished on an older version may need to follow the change.
+      const done = await container.prdService.doneBefore(name, fromV.version + 1);
+      if (done.length) {
+        console.log(`\n  ${amber(`Done before v${fromV.version + 1}`)} (built on an older version):`);
+        for (const t of done) console.log(`    ${t.id}  ${t.title}`);
+        console.log(dim(`  If they must follow the change: orch plan new --prd ${name} --since ${fromV.version}   (plans only what changed)`));
+      }
     });
-    if (out === null) return `--- ${labelA}\n${a}\n+++ ${labelB}\n${b}\n`;
-    return out.split('\n').filter((l) => !/^(diff --git|index |--- |\+\+\+ )/.test(l)).join('\n');
-  } finally {
-    await fs.rm(dir, { recursive: true, force: true });
-  }
 }

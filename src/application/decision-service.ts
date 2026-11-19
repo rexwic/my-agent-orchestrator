@@ -245,7 +245,7 @@ export class DecisionService {
 
   private async apply(task: Task, decision: Decision): Promise<Task> {
     const action = decision.answer!.action;
-    if (action === 'cancel') return this.taskService.updateStatus(task.id, 'cancelled');
+    if (action === 'cancel') return this.taskService.cancel(task.id);
 
     if (action === 'approve' && decision.source === 'gate') {
       // Approving a gate starts the task (it has no work to merge yet).

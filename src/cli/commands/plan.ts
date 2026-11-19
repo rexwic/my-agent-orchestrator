@@ -79,10 +79,20 @@ export function registerPlanCommand(program: Command, container: LightContainer)
     .option('-t, --title <title>', 'Short title (default: first line of the requirement)')
     .option('--role <name>', 'Planner role (default: config planner.role, else "planner")')
     .option('--prd <name>', 'Plan the latest version of this PRD (orch prd list)')
+    .option('--since <version>', 'With --prd: plan only what changed since this version (done tasks built on it are listed for the planner)')
     .action(async (words: string[] | undefined, opts) => {
       let requirement = (words ?? []).join(' ').trim();
       let prd: { name: string; version: number } | undefined;
-      if (opts.prd) {
+      if (opts.since !== undefined && !opts.prd) throw new InvalidArgumentsError('--since needs --prd <name>');
+      if (opts.prd && opts.since !== undefined) {
+        const since = Number(String(opts.since).replace(/^v/, ''));
+        const [from, to] = await Promise.all([container.prdService.get(opts.prd, since), container.prdService.get(opts.prd)]);
+        const { textDiff } = await import('../text-diff.js');
+        const change = await container.prdService.changeRequirement(opts.prd, since, await textDiff(from.content, to.content, `v${since}`, `v${to.version}`));
+        prd = { name: to.name, version: to.version };
+        requirement = [requirement, change.requirement].filter(Boolean).join('\n\n');
+        opts.title ??= `${to.name}: changes since v${since}`;
+      } else if (opts.prd) {
         const v = await container.prdService.get(opts.prd);
         prd = { name: v.name, version: v.version };
         requirement = [requirement, v.content].filter(Boolean).join('\n\n');

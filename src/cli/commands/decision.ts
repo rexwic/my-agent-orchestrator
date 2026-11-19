@@ -201,7 +201,13 @@ export function registerDecisionCommand(program: Command, container: LightContai
         return;
       }
       if (result.task.status === 'todo') console.log(`  Task ${taskId} → todo (an agent ${action === 'approve' ? 'starts it' : 'continues with your answer'})`);
-      if (result.task.status === 'cancelled') console.log(`  Task ${taskId} → cancelled`);
+      if (result.task.status === 'cancelled') {
+        if (result.task.workspace) {
+          const { buildFullContainer } = await import('../../container.js');
+          await (await buildFullContainer(container.context)).orchestrator.discardCancelledWork(taskId);
+        }
+        console.log(`  Task ${taskId} → cancelled${result.task.workspace ? ' (its worktree and branch are removed)' : ''}`);
+      }
       if (result.task.status === 'review' && result.task.approved) {
         // Integration (sync main, review, merge) needs the full container.
         const { buildFullContainer } = await import('../../container.js');

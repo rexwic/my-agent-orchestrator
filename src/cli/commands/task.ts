@@ -309,13 +309,18 @@ export function registerTaskCommand(program: Command, container: LightContainer)
 
       if (task.status === 'in_progress') {
         // Running task — need orchestrator to kill agent process, clean state, finish run
+        // (it also removes the worktree and branch).
         const { buildFullContainer } = await import('../../container.js');
         const full = await buildFullContainer(container.context);
         await full.orchestrator.cancelTask(id);
       } else {
         await container.taskService.cancel(id);
+        if (task.workspace) {
+          const { buildFullContainer } = await import('../../container.js');
+          await (await buildFullContainer(container.context)).orchestrator.discardCancelledWork(id);
+        }
       }
-      printSuccess(`Cancelled ${id}`);
+      printSuccess(`Cancelled ${id}${task.workspace ? ' — its worktree and branch are removed' : ''}`);
     });
 
   // task approve

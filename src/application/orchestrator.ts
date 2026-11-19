@@ -289,6 +289,7 @@ export class Orchestrator {
     // Tasks that were in_progress are NOT retried — they go to 'cancelled' so
     // agents don't redo already-committed work after a restart.
     await this.cleanupStaleRunningEntries();
+    await this.discardCancelledWork();
 
     this.state!.pid = process.pid;
     this.state!.started_at = new Date().toISOString();
@@ -489,6 +490,35 @@ export class Orchestrator {
 
       await this.saveState();
     });
+    await this.discardCancelledWork(taskId);
+  }
+
+  /**
+   * Remove the worktrees and branches of tasks a human cancelled (all of them,
+   * or one). Runs at start, after every reconcile and right after a cancel;
+   * a task whose agent still runs is left for a later pass.
+   */
+  async discardCancelledWork(taskId?: string): Promise<void> {
+    const tasks = taskId
+      ? [await this.deps.taskStore.get(taskId).catch(() => null)].filter((t): t is Task => t !== null)
+      : await this.cachedTaskStore.list().catch(() => [] as Task[]);
+    for (const task of tasks) {
+      if (task.status !== 'cancelled' || !task.discard_work || !task.workspace || this.state?.running[task.id]) continue;
+      try {
+        await this.deps.workspaceManager.cleanup(task.id, task.proof?.branch);
+      } catch (err) {
+        this.reportOnce(`discard-${task.id}`, {
+          error: err instanceof Error ? err.message : String(err),
+          context: `removing the worktree of cancelled task ${task.id}`,
+        });
+        continue;
+      }
+      const fresh = await this.deps.taskStore.get(task.id);
+      if (fresh?.status === 'cancelled') {
+        delete fresh.workspace;
+        await this.deps.taskStore.save(fresh);
+      }
+    }
   }
 
   /**
@@ -546,6 +576,7 @@ export class Orchestrator {
         await this.loadState();
         await this.syncRoles();
         await this.reconcile();
+        await this.discardCancelledWork();
         if (!this.skipAutonomousSeeding) {
           await this.seedAutonomousTasks();
         }

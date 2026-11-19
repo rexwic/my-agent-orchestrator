@@ -162,6 +162,9 @@ export class TaskService {
       throw new InvalidTransitionError(id, task.status, 'cancelled');
     }
 
+    // A human cancels: the orchestrator removes its worktree and branch.
+    task.discard_work = true;
+    await this.taskStore.save(task);
     return this.updateStatus(id, 'cancelled');
   }
 

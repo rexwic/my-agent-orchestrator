@@ -83,6 +83,11 @@ export interface Task {
   prd_draft?: string;
   /** PM task answering this decision (it answers or escalates; it never merges code). */
   triage_decision_id?: string;
+  /**
+   * A human cancelled it: ORCH removes its worktree and branch. (Tasks cancelled
+   * by ORCH itself, e.g. after a restart, keep theirs so no work is lost.)
+   */
+  discard_work?: boolean;
 }
 
 export interface CreateTaskInput {
