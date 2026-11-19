@@ -238,6 +238,15 @@ export function registerTaskCommand(program: Command, container: LightContainer)
         console.log(`\n  Delivery report · ${delivered.status === 'done' ? 'done' : amber(delivered.status)} · ${delivered.submitted_by} · ${delivered.submitted_at}\n  ${'─'.repeat(42)}`);
         for (const line of delivered.report.split('\n')) console.log(`  ${line}`);
       }
+      if (t.review) {
+        const { describeFinding, MAX_REVIEW_ROUNDS } = await import('../../domain/review.js');
+        console.log(`\n  Review · round ${t.review.round}/${MAX_REVIEW_ROUNDS} · ${t.review.status === 'passed' ? 'passed' : amber(t.review.status)}${t.review.reviewer ? ` · ${t.review.reviewer}` : ''}\n  ${'─'.repeat(42)}`);
+        if (t.review.summary) console.log(`  ${t.review.summary}`);
+        for (const f of t.review.findings) {
+          const check = t.review.checks?.find((c) => c.id === f.id);
+          console.log(`  ${describeFinding(f)}${check ? (check.fixed ? '  ✓ fixed' : '  ✗ not fixed') : ''}`);
+        }
+      }
 
       if (t.review_results?.length) {
         console.log(`\n  Review Results\n  ${'─'.repeat(42)}`);

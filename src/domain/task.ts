@@ -88,6 +88,10 @@ export interface Task {
    * by ORCH itself, e.g. after a restart, keep theirs so no work is lost.)
    */
   discard_work?: boolean;
+  /** Review task: the task it reviews (the reviewer submits findings; it never merges code). */
+  review_of?: string;
+  /** Review of this task by a reviewer role (rounds, findings). */
+  review?: import('./review.js').TaskReview;
 }
 
 export interface CreateTaskInput {
@@ -113,4 +117,5 @@ export interface CreateTaskInput {
   prd?: string;
   prd_draft?: string;
   triage_decision_id?: string;
+  review_of?: string;
 }

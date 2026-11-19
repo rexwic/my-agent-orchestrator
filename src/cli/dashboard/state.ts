@@ -30,7 +30,7 @@ export interface DashboardRole {
   paused?: { until: string; reason: string };
 }
 
-export type TaskKind = 'work' | 'plan' | 'prd' | 'pm-answer';
+export type TaskKind = 'work' | 'plan' | 'prd' | 'pm-answer' | 'review';
 
 export interface DashboardTask {
   id: string;
@@ -49,6 +49,8 @@ export interface DashboardTask {
   produces?: string[];
   uses?: string[];
   delivery?: { status: string; by: string; at: string };
+  /** Review by a reviewer role: round, status, must-fix findings still open. */
+  review?: { round: number; status: string; open: number };
   updated_at: string;
 }
 
@@ -108,10 +110,19 @@ export interface StateOptions {
   recentDecisions?: number;
 }
 
+/** Must-fix findings the reviewer still holds against the task. */
+function openFindings(t: Task): number {
+  const r = t.review;
+  if (!r || (r.status !== 'changes' && r.status !== 'escalated')) return 0;
+  if (r.round > 1) return (r.checks ?? []).filter((c) => !c.fixed).length;
+  return r.findings.filter((f) => f.severity === 'must-fix' && f.round === r.round).length;
+}
+
 function kindOf(t: Task): TaskKind {
   if (t.plan_id) return 'plan';
   if (t.prd_draft) return 'prd';
   if (t.triage_decision_id) return 'pm-answer';
+  if (t.review_of) return 'review';
   return 'work';
 }
 
@@ -184,6 +195,7 @@ export async function buildDashboardState(c: LightContainer, opts: StateOptions)
       ...(t.produces?.length ? { produces: t.produces } : {}),
       ...(t.uses?.length ? { uses: t.uses } : {}),
       ...(d ? { delivery: { status: d.status, by: d.submitted_by, at: d.submitted_at } } : {}),
+      ...(t.review ? { review: { round: t.review.round, status: t.review.status, open: openFindings(t) } } : {}),
       updated_at: t.updated_at,
     };
   });

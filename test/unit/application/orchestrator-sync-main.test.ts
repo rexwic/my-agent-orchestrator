@@ -50,6 +50,8 @@ interface SetupOptions {
   heads?: string[];
   sync?: SyncResult;
   task?: Partial<Task>;
+  /** A reviewer role reviews it: what the review gate answers. */
+  reviewGate?: 'not_required' | 'passed' | 'pending';
 }
 
 const orchestrators: Orchestrator[] = [];
@@ -107,6 +109,8 @@ async function setup(opts: SetupOptions = {}) {
   };
 
   const deps = buildDeps({ taskStore, agentStore: createMockAgentStore([agent]), runStore, stateStore, workspaceManager: wm, shellRunner, config: DEFAULT_CONFIG });
+  const gate = vi.fn(async () => opts.reviewGate ?? 'not_required');
+  if (opts.reviewGate) deps.reviewService = { gate } as any;
   const events: any[] = [];
   deps.eventBus.onAny((e: any) => events.push(e));
   const orch = new Orchestrator(deps);
@@ -114,7 +118,7 @@ async function setup(opts: SetupOptions = {}) {
   await (orch as any).loadState();
   const finish = () => (orch as any).handleRunSuccess(taskId, 'run_s', 'agt_s', undefined, 'implemented', []);
   const get = async () => (await taskStore.get(taskId))!;
-  return { orch, finish, get, taskStore, wm, shellRunner, calls, events, taskId };
+  return { orch, finish, get, taskStore, wm, shellRunner, calls, events, taskId, gate };
 }
 
 const FAIL: ShellRunResult = { exitCode: 1, output: 'OrderServiceTest.total expected 10 but was 0', timedOut: false };
@@ -400,5 +404,33 @@ describe('approval', () => {
   it('refuses tasks that are not in review', async () => {
     const { orch } = await setup({ task: { status: 'todo' } });
     await expect(orch.approveTask('tsk_s')).rejects.toThrow(/todo/);
+  });
+});
+
+describe('review by a reviewer role', () => {
+  it('passing checks wait for the reviewer: stays in review, not approved, not merged', async () => {
+    const { finish, get, calls, gate } = await setup({ criteria: ['test_pass'], reviewGate: 'pending' });
+    await finish();
+    expect(calls).toEqual(['commit', 'sync:main1', 'review:npm test']);
+    const task = await get();
+    expect(task.status).toBe('review');
+    expect(task.approved).toBeUndefined();
+    expect(gate).toHaveBeenCalledTimes(1);
+  });
+
+  it('a failing check sends the work back before any review', async () => {
+    const { finish, get, gate } = await setup({ criteria: ['test_pass'], reviews: [FAIL], reviewGate: 'pending' });
+    await finish();
+    expect((await get()).status).toBe('todo');
+    expect(gate).not.toHaveBeenCalled();
+  });
+
+  it('work reviewed before (e.g. back after a conflict) follows the usual approval rules', async () => {
+    const auto = await setup({ reviewGate: 'passed' });
+    await auto.finish();
+    expect((await auto.get()).status).toBe('done');
+    const manual = await setup({ policy: 'manual', reviewGate: 'passed' });
+    await manual.finish();
+    expect((await manual.get()).status).toBe('review');
   });
 });

@@ -91,6 +91,8 @@ export interface OrchestratorDeps {
   prdService?: import('./prd-service.js').PrdService;
   /** PM answering agents' questions: the PM's task prompt and how it ends. */
   pmService?: import('./pm-service.js').PmService;
+  /** Review by a reviewer role before merging: the gate, the reviewer's prompt, how a review task ends. */
+  reviewService?: import('./review-service.js').ReviewService;
   /** Prepares a directory with an `orch` launcher to put first on agents' PATH. */
   prepareAgentBin?: () => Promise<string | undefined>;
   config: OrchestratorConfig;
@@ -180,6 +182,7 @@ export class Orchestrator {
       withLock: (fn) => this.withStateLock(fn),
       isStopping: () => this.shuttingDown,
       ...(deps.decisionService ? { decisions: deps.decisionService } : {}),
+      ...(deps.reviewService ? { agentReview: deps.reviewService } : {}),
     });
     this.cachedTaskStore = new CachedTaskStore(deps.taskStore);
     this.cachedAgentStore = new CachedAgentStore(deps.agentStore);
@@ -1300,9 +1303,10 @@ export class Orchestrator {
         ])
         : [undefined, []];
       const contracts = task.uses?.length ? await readContractFiles(workspacePath, task.uses).catch(() => []) : [];
-      const [prd, triage] = await Promise.all([
+      const [prd, triage, review] = await Promise.all([
         this.deps.prdService ? this.deps.prdService.promptContext(task).catch(() => undefined) : undefined,
         this.deps.pmService ? this.deps.pmService.promptContext(task).catch(() => undefined) : undefined,
+        this.deps.reviewService && task.review_of ? this.deps.reviewService.promptContext(task).catch(() => undefined) : undefined,
       ]);
       const context = buildPromptContext(
         task,
@@ -1310,7 +1314,7 @@ export class Orchestrator {
         attempt,
         workspacePath,
         this.deps.config,
-        { allAgents, retryContext, sharedContext, feedback: task.feedback, messages: pendingMessages.length ? pendingMessages : undefined, goal: goalContext, decisions, planning, delivery, upstream, contracts, prd, triage },
+        { allAgents, retryContext, sharedContext, feedback: task.feedback, messages: pendingMessages.length ? pendingMessages : undefined, goal: goalContext, decisions, planning, delivery, upstream, contracts, prd, triage, review },
       );
 
       // Render prompt(s) — split mode for caching, legacy mode for backward compat
@@ -2078,6 +2082,12 @@ export class Orchestrator {
       return {
         outcome: await this.deps.prdService.draftOutcome(task),
         missing: `You ended your run without handing in the PRD. Write it and run: orch prd add ${task.prd_draft} -f prd.md -m "<what it covers>"`,
+      };
+    }
+    if (task.review_of && this.deps.reviewService) {
+      return {
+        outcome: await this.deps.reviewService.outcome(task),
+        missing: 'You ended your run without submitting the review. Write review.yml and run: orch review submit review.yml',
       };
     }
     if (task.triage_decision_id && this.deps.pmService) {

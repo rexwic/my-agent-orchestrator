@@ -153,6 +153,12 @@ export class StructuredLogger {
           from: event.from, by: event.by, note: event.note,
         };
 
+      case 'review:requested':
+        return { ts, level: 'info', event: event.type, taskId: event.taskId, reviewTaskId: event.reviewTaskId, round: event.round, reviewer: event.reviewer };
+
+      case 'review:submitted':
+        return { ts, level: event.verdict === 'passed' ? 'info' : 'warn', event: event.type, taskId: event.taskId, round: event.round, verdict: event.verdict, blocking: event.blocking, by: event.by };
+
       case 'prd:versioned':
         return { ts, level: event.by === 'human' ? 'info' : 'warn', event: event.type, name: event.name, version: event.version, by: event.by, ...(event.note ? { note: event.note } : {}) };
 

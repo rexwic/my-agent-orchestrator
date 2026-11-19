@@ -30,6 +30,7 @@ const LIGHT_COMMANDS: Record<string, (program: Command, container: LightContaine
   decision: async (p, c) => { const m = await import('../cli/commands/decision.js'); m.registerDecisionCommand(p, c); },
   plan:    async (p, c) => { const m = await import('../cli/commands/plan.js');    m.registerPlanCommand(p, c); },
   prd:     async (p, c) => { const m = await import('../cli/commands/prd.js');     m.registerPrdCommand(p, c); },
+  review:  async (p, c) => { const m = await import('../cli/commands/review.js');  m.registerReviewCommand(p, c); },
   org:     async (p, c) => { const m = await import('../cli/commands/org.js');     m.registerOrgCommand(p, c); },
 };
 
@@ -73,6 +74,7 @@ const COMMAND_STUBS: Array<[name: string, description: string]> = [
   ['decision', 'Decisions for a human (agent questions, loop escalations, gates, plans)'],
   ['plan',    'Plan a requirement with a planner agent; approve it to create the tasks'],
   ['prd',     'Product requirements (PRD) with versions, drafted by the PM role'],
+  ['review',  'Reviews by a reviewer role: submit findings, show a review'],
   ['org',     'Pre-built AI companies'],
   ['run',     'Run tasks'],
   ['dashboard', 'Web dashboard: watch the team, answer decisions, approve plans'],

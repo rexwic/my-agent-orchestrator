@@ -95,9 +95,9 @@ details summary { cursor: pointer; color: var(--dim); }
   try { showFinished = localStorage.getItem('orch-show-finished') === '1'; } catch (e) {}
 
   var STATUS = { todo: '待辦', in_progress: '進行中', review: '審查中', done: '完成', failed: '失敗', cancelled: '已取消', retrying: '重試中', waiting_decision: '等決策' };
-  var SOURCE = { escalation: '迴圈上限', agent: 'agent 提問', gate: '關卡', plan: '計畫', delivery: '交付回報' };
+  var SOURCE = { escalation: '迴圈上限', agent: 'agent 提問', gate: '關卡', plan: '計畫', delivery: '交付回報', review: '審查' };
   var DELIVERY = { done: '已交付', partial: '部分完成', blocked: '卡住' };
-  var KIND = { plan: '規劃', prd: 'PRD 起草', 'pm-answer': 'PM 回答' };
+  var KIND = { plan: '規劃', prd: 'PRD 起草', 'pm-answer': 'PM 回答', review: '審查' };
 
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
   function time(iso) { if (!iso) return ''; var d = new Date(iso); return isNaN(d) ? iso : d.toLocaleString(); }
@@ -204,6 +204,10 @@ details summary { cursor: pointer; color: var(--dim); }
         if (t.waiting_for.length) extra.push('<span class="small dim">等待：' + esc(t.waiting_for.join('、')) + '</span>');
         if (t.send_backs) extra.push('<span class="small" style="color:var(--warn)">退回 ' + t.send_backs + ' 次</span>');
         if (t.uses) extra.push('<span class="small dim">契約：' + esc(t.uses.join(', ')) + '</span>');
+        if (t.review) {
+          var rv = { pending: '審查中', passed: '審查通過', changes: '審查退回', escalated: '審查待你決定' }[t.review.status] || t.review.status;
+          extra.push('<span class="pill ' + (t.review.status === 'passed' ? 'ok' : t.review.status === 'pending' ? '' : 'warn') + '">' + esc(rv) + ' · 第 ' + t.review.round + ' 輪' + (t.review.open ? ' · ' + t.review.open + ' 個 must-fix' : '') + '</span>');
+        }
         return '<tr class="click" data-task="' + esc(t.id) + '"><td>' + statusBadge(t.status) + '</td><td>' + esc(t.title) + ' ' + extra.join(' ') +
           '</td><td class="small">' + esc(t.agent || '') + '</td><td class="small">' +
           (t.delivery ? '<span class="pill ' + (t.delivery.status === 'done' ? 'ok' : 'warn') + '">' + esc(DELIVERY[t.delivery.status] || t.delivery.status) + '</span>' : '') +

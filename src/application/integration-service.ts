@@ -48,6 +48,8 @@ export type IntegrationOutcome =
   | { status: 'sent_back'; reason: SendBackReason; files?: string[] }
   /** Synced and reviewed; waits for a human to approve (manual policy, no criteria). */
   | { status: 'awaiting_approval' }
+  /** Checks passed; a reviewer role reviews it next (it stays in review meanwhile). */
+  | { status: 'awaiting_review' }
   /** Stays in review for a human. */
   | { status: 'review'; detail: string }
   /** Loop limit reached: a human decides (`orch decision answer`). */
@@ -78,6 +80,8 @@ export interface IntegrationDeps {
   isStopping?: () => boolean;
   /** Escalation: past the send-back limit a human decides (otherwise the task just waits in review). */
   decisions?: Pick<DecisionService, 'request'>;
+  /** Review by a reviewer role once the checks pass (see ReviewService.gate). */
+  agentReview?: { gate(task: Task): Promise<'not_required' | 'passed' | 'pending'> };
 }
 
 export class IntegrationService {
@@ -207,8 +211,17 @@ export class IntegrationService {
         verify = false;
       }
 
-      // Passing criteria approve (as before); without criteria the approval policy decides.
+      // A reviewer role reviews work that just passed its checks (a human approval skips it).
       task = (await this.deps.taskStore.get(taskId)) ?? task;
+      if (trigger === 'completed' && !task.approved && this.deps.agentReview) {
+        const current = task;
+        const gate = await this.withLock(() => this.deps.agentReview!.gate(current));
+        // (A passed review approves through ReviewService; afterwards the usual rules apply.)
+        if (gate === 'pending') return { status: 'awaiting_review' };
+        task = (await this.deps.taskStore.get(taskId)) ?? task;
+      }
+
+      // Passing criteria approve (as before); without criteria the approval policy decides.
       if (!task.approved) {
         if (!autoApprove && criteria.length === 0) return { status: 'awaiting_approval' };
         task.approved = true;

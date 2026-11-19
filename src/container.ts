@@ -49,6 +49,7 @@ import { PlanService } from './application/plan-service.js';
 import { DeliverableService } from './application/deliverable-service.js';
 import { PrdService } from './application/prd-service.js';
 import { PmService } from './application/pm-service.js';
+import { ReviewService } from './application/review-service.js';
 
 import type { Orchestrator } from './application/orchestrator.js';
 import type { DoctorService } from './application/doctor-service.js';
@@ -97,6 +98,7 @@ export interface LightContainer {
   deliverableService: DeliverableService;
   prdService: PrdService;
   pmService: PmService;
+  reviewService: ReviewService;
 }
 
 /** Full container — everything from light + orchestrator, adapters, workspace, template. */
@@ -161,6 +163,7 @@ export async function buildLightContainer(context: CliContext): Promise<LightCon
   const prdService = new PrdService({ store: prdStore, taskService, roleStore, eventBus, config, planService });
   // Routes agents' questions to the PM role first (registers itself on decisionService).
   const pmService = new PmService({ decisionService, taskService, taskStore, roleStore, eventBus, config });
+  const reviewService = new ReviewService({ taskStore, taskService, roleStore, decisionService, eventBus, config });
 
   return {
     context,
@@ -197,6 +200,7 @@ export async function buildLightContainer(context: CliContext): Promise<LightCon
     deliverableService,
     prdService,
     pmService,
+    reviewService,
   };
 }
 
@@ -295,6 +299,7 @@ export async function buildFullContainer(context: CliContext): Promise<Container
     deliverableService: light.deliverableService,
     prdService: light.prdService,
     pmService: light.pmService,
+    reviewService: light.reviewService,
     // `orch` launchers for agents (so they can request decisions), when running from the orch CLI.
     prepareAgentBin: async () => {
       const entry = cliEntryFromArgv();

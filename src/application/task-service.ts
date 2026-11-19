@@ -95,6 +95,7 @@ export class TaskService {
       ...(input.prd ? { prd: input.prd } : {}),
       ...(input.prd_draft ? { prd_draft: input.prd_draft } : {}),
       ...(input.triage_decision_id ? { triage_decision_id: input.triage_decision_id } : {}),
+      ...(input.review_of ? { review_of: input.review_of } : {}),
     };
 
     if (input.attachments?.length && this.paths) {

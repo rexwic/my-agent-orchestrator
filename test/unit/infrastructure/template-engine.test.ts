@@ -599,6 +599,22 @@ describe('system/user template split', () => {
     expect(rendered).toContain('orch task deliver report.md --status <status>');
   });
 
+  it('user template tells a reviewer what to review and how to grade findings (round 1), or what to verify (round 2)', async () => {
+    const base = { task_id: 'tsk_be', title: 'Discount API', description: 'd', author_role: 'backend', branch: 'orchestry/tsk_be/api', files_changed: ['src/A.java'], max_rounds: 2 };
+    const r1 = await engine.render(DEFAULT_USER_TEMPLATE, buildPromptContext(makeTask(), makeAgent(), 1, '/w', DEFAULT_CONFIG, { review: { ...base, round: 1, to_verify: [] } }));
+    expect(r1).toContain("## Your job: review a teammate's work (round 1 of 2)");
+    expect(r1).toContain('git diff HEAD...orchestry/tsk_be/api');
+    expect(r1).toContain('`must-fix`: a bug');
+    expect(r1).toContain('orch review submit review.yml');
+    expect(r1).not.toContain('checks:');
+
+    const r2 = await engine.render(DEFAULT_USER_TEMPLATE, buildPromptContext(makeTask(), makeAgent(), 1, '/w', DEFAULT_CONFIG, { review: { ...base, round: 2, to_verify: ['F1 [must-fix] src/A.java — NPE'] } }));
+    expect(r2).toContain('only verifies that the earlier must-fix findings are fixed');
+    expect(r2).toContain('- F1 [must-fix] src/A.java — NPE');
+    expect(r2).toContain('checks:');
+    expect(r2).not.toContain('`must-fix`: a bug');
+  });
+
   it('user template gives a task the PRD it implements', async () => {
     const ctx = buildPromptContext(makeTask(), makeAgent(), 1, '/workspace', DEFAULT_CONFIG, {
       prd: { name: 'discount', version: 3, content: '# Discount\n1. Percent, max 50%', truncated: true },

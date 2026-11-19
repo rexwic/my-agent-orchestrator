@@ -280,3 +280,19 @@ describe('PlanService contracts', () => {
     expect(await task(approved.created_tasks!['be']!)).toMatchObject({ uses: ['docs/api/discount.yaml', 'package.json'] });
   });
 });
+
+describe('PlanService and role duties', () => {
+  it('the planner is the role declaring the plan duty; reviewers are not assignable', async () => {
+    const { service, setRoles } = setup();
+    setRoles([
+      validateRole({ name: 'lead', adapter: 'claude', duties: ['plan'] }),
+      validateRole({ name: 'backend', adapter: 'claude' }),
+      validateRole({ name: 'reviewer', adapter: 'codex', duties: ['review'], reviews: ['backend'] }),
+    ]);
+    const { plan, task } = await service.start({ requirement: 'x' });
+    expect(plan.role).toBe('lead');
+    expect(task.role).toBe('lead');
+    const check = await service.validate({ goal: 'G', tasks: [{ key: 'a', title: 'A', role: 'reviewer', description: 'd' }] }, plan);
+    expect(check.errors[0]).toMatch(/role "reviewer" does not exist \(roles: backend\)/);
+  });
+});

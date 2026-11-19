@@ -77,6 +77,8 @@ export interface PromptContext {
   contracts?: import('../workspace/contract-files.js').ContractFile[];
   /** The PRD the task implements, or drafts (`drafting`). */
   prd?: { name: string; version: number; content?: string; truncated?: boolean; drafting?: { next_version: number } };
+  /** Review task: the work to review (see ReviewService). */
+  review?: import('../../application/review-service.js').ReviewPromptContext;
   /** PM task: the teammate's question to answer. */
   triage?: { decision_id: string; question: string; options: string[]; context?: string; asked_by: string; asking_task?: { id: string; title: string } };
   /** Reports of the tasks this one depends on. */
@@ -268,6 +270,7 @@ export interface BuildPromptOptions {
   contracts?: PromptContext['contracts'];
   prd?: PromptContext['prd'];
   triage?: PromptContext['triage'];
+  review?: PromptContext['review'];
 }
 
 export function buildPromptContext(
@@ -278,7 +281,7 @@ export function buildPromptContext(
   config: OrchestratorConfig,
   options?: BuildPromptOptions,
 ): PromptContext {
-  const { allAgents, retryContext, sharedContext, feedback, messages: rawMessages, goal, decisions, planning, delivery, upstream, contracts, prd, triage } = options ?? {};
+  const { allAgents, retryContext, sharedContext, feedback, messages: rawMessages, goal, decisions, planning, delivery, upstream, contracts, prd, triage, review } = options ?? {};
 
   // Map messages to prompt-friendly shape
   const agentById = new Map((allAgents ?? []).map((a) => [a.id, a]));
@@ -330,6 +333,7 @@ export function buildPromptContext(
     contracts: contracts?.length ? contracts : undefined,
     prd,
     triage,
+    review,
     shared_context: sharedContext && Object.keys(sharedContext).length > 0
       ? filterRelevantContext(sharedContext, {
           agentName: agent.name,
@@ -550,6 +554,37 @@ This is what the product must do. Follow it. If it is ambiguous or contradicts y
 - **If only a human can decide** (pricing, legal, priorities, scope beyond the PRD, or you are not sure): \`orch decision escalate {{ triage.decision_id }} -m "<why, and the options you see>"\`.
 
 Then end your run with a short summary.
+{% endif %}
+
+{% if review %}
+## Your job: review a teammate's work (round {{ review.round }} of {{ review.max_rounds }})
+You review "{{ review.title }}" ({{ review.task_id }}{% if review.author_role %}, by the {{ review.author_role }} role{% endif %}). Read the code; do NOT change any files — you report findings, the author fixes them.
+{% if review.branch %}See the changes: \`git diff HEAD...{{ review.branch }}\` (and \`git show {{ review.branch }}:<path>\` for whole files).
+{% endif %}{% if review.files_changed.size > 0 %}Files changed: {% for f in review.files_changed %}\`{{ f }}\`{% unless forloop.last %}, {% endunless %}{% endfor %}
+{% endif %}
+{% if review.round == 1 %}Check it against the task (above), its acceptance criteria{% if prd %}, the PRD{% endif %}{% if contracts %} and the contracts{% endif %}. Give every finding a severity:
+- \`must-fix\`: a bug, a broken or missing acceptance criterion, a contract or PRD violation, a security or data-loss risk, failing or missing tests for new logic. Only these send the work back — use it only when it is worth another round.
+- \`should\`: worth improving (design, naming, duplication); does not block.
+- \`nit\`: trivial style; does not block.
+No findings is a fine review when the work is good.
+{% else %}This round only verifies that the earlier must-fix findings are fixed. Check each one:
+{% for f in review.to_verify %}- {{ f }}
+{% endfor %}Anything new you notice may be listed, but it cannot block now (a new must-fix is recorded as should).
+{% endif %}
+**Submit:** write \`review.yml\` and run \`orch review submit review.yml\`, then end your run with a short summary.
+\`\`\`yaml
+summary: One or two lines on the overall state
+{% if review.round > 1 %}checks:                      # every finding listed above
+  - id: F1
+    fixed: true
+    note: optional
+{% endif %}findings:{% if review.round > 1 %}                    # optional in this round{% endif %}
+  - severity: must-fix         # must-fix | should | nit
+    file: src/main/java/com/acme/DiscountService.java
+    line: 42                   # optional
+    issue: What is wrong and why it matters
+    suggestion: How to fix it  # optional
+\`\`\`
 {% endif %}
 
 ## When a human must decide

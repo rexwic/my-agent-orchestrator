@@ -23,7 +23,9 @@ export type DecisionSource =
   /** A planner submitted a plan: approve it, send it back with feedback, or cancel it. */
   | 'plan'
   /** An agent delivered its task as partial or blocked. */
-  | 'delivery';
+  | 'delivery'
+  /** A reviewer still has open must-fix findings after the last round. */
+  | 'review';
 
 /** What happens to the task once answered. */
 export type DecisionAction = 'continue' | 'approve' | 'cancel';

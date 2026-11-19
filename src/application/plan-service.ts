@@ -146,7 +146,7 @@ export class PlanService {
     const [roles, tasks] = await Promise.all([this.deps.roleStore.load(), this.deps.taskStore.list()]);
     const planner = plan?.role ?? dutyRole(roles.roles, 'plan', this.deps.config.planner?.role || DEFAULT_PLANNER_ROLE);
     return validatePlanDraft(raw, {
-      roles: roles.roles.map((r) => r.name).filter((n) => n !== planner),
+      roles: roles.roles.filter((r) => r.name !== planner && !r.duties?.includes('review')).map((r) => r.name),
       existingTaskIds: new Set(tasks.map((t) => t.id)),
       maxTasks: this.maxTasks,
       ...(this.deps.projectRoot ? { fileExists: (p: string) => existsSync(path.join(this.deps.projectRoot!, p)) } : {}),
@@ -246,7 +246,7 @@ export class PlanService {
     if (!task.plan_id) return undefined;
     const plan = await this.deps.store.get(task.plan_id);
     if (!plan) return undefined;
-    const roles = (await this.deps.roleStore.load()).roles.filter((r) => r.name !== plan.role);
+    const roles = (await this.deps.roleStore.load()).roles.filter((r) => r.name !== plan.role && !r.duties?.includes('review'));
     return {
       plan_id: plan.id,
       revision: plan.revision,
