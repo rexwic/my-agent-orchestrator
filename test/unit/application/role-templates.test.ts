@@ -115,3 +115,25 @@ describe('role templates', () => {
     vi.restoreAllMocks();
   });
 });
+
+describe('built-in software template', () => {
+  it('is valid, complete and wired: reviewer reviews the authors, QA files bugs for them', async () => {
+    const { BUILTIN_ROLE_TEMPLATES } = await import('../../../src/domain/role-templates.js');
+    const roles = BUILTIN_ROLE_TEMPLATES['software']!.roles.map((r) => validateRole(r));
+    expect(roles.map((r) => r.name)).toEqual(['pm', 'planner', 'backend', 'frontend', 'qa', 'reviewer']);
+    expect(dutyRole(roles, 'plan', 'x')).toBe('planner');
+    expect(dutyRole(roles, 'answer_questions', 'x')).toBe('pm');
+    expect(dutyRole(roles, 'write_prd', 'x')).toBe('pm');
+    const reviewer = roles.find((r) => r.name === 'reviewer')!;
+    expect(reviewer).toMatchObject({ adapter: 'codex', reviews: ['backend', 'frontend'] });
+    expect(roles.find((r) => r.name === 'qa')!.bug_owners).toEqual(['backend', 'frontend']);
+    expect(roles.every((r) => (r.system_prompt ?? '').length > 100)).toBe(true);
+
+    const roleStore = new MemoryRoleStore();
+    const service = new RoleService(roleStore, createMockAgentStore(), new EventBus(), DEFAULT_CONFIG);
+    const t = await loadRoleTemplate('software');
+    const r = await service.applyTemplate(t.roles);
+    expect(r.created).toHaveLength(6);
+    expect(r.sync.created).toContain('backend-2');
+  });
+});

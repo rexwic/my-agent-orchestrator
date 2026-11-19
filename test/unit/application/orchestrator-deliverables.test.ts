@@ -146,3 +146,23 @@ describe('delivery prompt', () => {
     expect(ctx.contracts).toEqual([{ path: 'docs/api/none.yaml', content: '', missing: true }]);
   });
 });
+
+describe('role instructions', () => {
+  it("the agent's role system_prompt is added to the system prompt the adapter gets", async () => {
+    const taskStore = createMockTaskStore([makeTask({ id: 'tsk_r', title: 'Work', status: 'todo' })]);
+    const adapterRegistry = new AdapterRegistry();
+    const adapter = createMockAdapter([{ type: 'done', timestamp: new Date().toISOString(), data: { result: 'ok' } }]);
+    adapterRegistry.register(adapter);
+    const agent = makeAgent({ id: 'agt_r', name: 'backend-1', status: 'idle', config: { approval_policy: 'auto', max_turns: 5, timeout_ms: 60_000, stall_timeout_ms: 60_000, system_prompt: 'You are a backend engineer (Java).' } });
+    const deps = buildDeps({ taskStore, adapterRegistry, agentStore: createMockAgentStore([agent]) });
+    const orch = new Orchestrator(deps);
+    orchestrators.push(orch);
+    await (orch as any).loadState();
+    (orch as any).lockAcquired = true;
+    await (orch as any).tick();
+    const deadline = Date.now() + 3000;
+    while (Date.now() < deadline && vi.mocked(adapter.execute).mock.calls.length === 0) await new Promise((r) => setTimeout(r, 10));
+    const params = vi.mocked(adapter.execute).mock.calls[0]![0] as any;
+    expect(params.systemPrompt).toBe('rendered prompt\n\n## Your role\nYou are a backend engineer (Java).');
+  });
+});

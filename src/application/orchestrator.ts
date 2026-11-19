@@ -1332,6 +1332,15 @@ export class Orchestrator {
         prompt = await this.deps.templateEngine.render(userTemplate, context);
       }
 
+      // The agent's own instructions (its role's system_prompt). Adapters prefer the
+      // rendered system prompt over config.system_prompt, so it must be part of it.
+      const roleInstructions = agent.config.system_prompt?.trim();
+      if (roleInstructions) {
+        const block = `## Your role\n${roleInstructions}`;
+        if (systemPrompt !== undefined) systemPrompt = `${systemPrompt}\n\n${block}`;
+        else prompt = `${block}\n\n${prompt}`;
+      }
+
       // Augment prompt with library skill content
       if (this.deps.skillLoader && agent.config.skills?.length) {
         const skillBlock = await this.deps.skillLoader.loadSkills(agent.config.skills);
