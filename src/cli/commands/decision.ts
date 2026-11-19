@@ -43,15 +43,27 @@ export function registerDecisionCommand(program: Command, container: LightContai
     .option('--task <id>', 'Only decisions on this task')
     .action(async (opts) => {
       const items = await container.decisionService.list({
-        ...(opts.all ? {} : { status: 'pending' as const }),
+        ...(opts.all ? {} : { status: 'pending' as const, assignee: 'human' }),
         ...(opts.task ? { taskId: opts.task } : {}),
       });
+      const withRoles = opts.all ? [] : (await container.decisionService.list({ status: 'pending' })).filter((d) => d.assignee);
+      const unseen = await container.prdService.unseen().catch(() => []);
       if (container.context.json) {
         console.log(JSON.stringify(items, null, 2));
         return;
       }
+      const notices = (): void => {
+        if (withRoles.length) {
+          console.log(dim(`\n  ${withRoles.length} question(s) are with ${[...new Set(withRoles.map((d) => d.assignee))].join(', ')} first (they answer or escalate to you): orch decision list --all`));
+        }
+        for (const [name, versions] of groupBy(unseen, (v) => v.name)) {
+          const last = versions.at(-1)!;
+          console.log(`  ${amber('PRD changed')}: ${name} v${versions.map((v) => v.version).join(', v')} (${last.created_by}${last.note ? `: ${oneLine(last.note, 60)}` : ''}) → orch prd diff ${name}`);
+        }
+      };
       if (items.length === 0) {
         console.log(opts.all ? '  No decisions yet.' : '  No pending decisions.');
+        notices();
         return;
       }
       printTable(
@@ -60,11 +72,14 @@ export function registerDecisionCommand(program: Command, container: LightContai
           d.id,
           d.status === 'pending' ? amber('pending') : dim('answered'),
           d.task_id ?? '—',
-          `${SOURCE_LABEL[d.source]}${d.requested_by && d.source === 'agent' ? ` (${d.requested_by})` : ''}`,
-          d.status === 'answered' ? `${oneLine(d.question, 50)} ${dim('→')} ${oneLine(describeAnswer(d), 30)}` : oneLine(d.question),
+          `${SOURCE_LABEL[d.source]}${d.requested_by && d.source === 'agent' ? ` (${d.requested_by})` : ''}${d.assignee ? amber(` → ${d.assignee}`) : ''}`,
+          d.status === 'answered'
+            ? `${oneLine(d.question, 50)} ${dim('→')} ${oneLine(describeAnswer(d), 30)}${d.answer?.answered_by && d.answer.answered_by !== 'human' ? dim(` (${d.answer.answered_by})`) : ''}`
+            : oneLine(d.question),
         ]),
       );
       if (!opts.all) console.log(dim(`\n  Answer: orch decision answer <id> --choose <option> | -m "<answer>" [--approve | --cancel] [--project]`));
+      notices();
     });
 
   decision
@@ -83,8 +98,9 @@ export function registerDecisionCommand(program: Command, container: LightContai
         ['Task', d.task_id ?? '—'],
         ['Asked', d.created_at],
       ];
+      if (d.assignee) pairs.push(['With', amber(`${d.assignee} (task ${d.triage_task_id ?? '?'}) — it answers or escalates to you; you can still answer it`)]);
       if (d.answer) {
-        pairs.push(['Answer', describeAnswer(d)], ['Action', d.answer.action], ['Scope', d.answer.scope], ['Answered', d.answer.answered_at]);
+        pairs.push(['Answer', describeAnswer(d)], ['Action', d.answer.action], ['Scope', d.answer.scope], ['Answered', `${d.answer.answered_at}${d.answer.answered_by ? ` by ${d.answer.answered_by}` : ''}`]);
       }
       printKeyValue(pairs);
       console.log(`\n  ${d.question}`);
@@ -125,6 +141,22 @@ export function registerDecisionCommand(program: Command, container: LightContai
     });
 
   decision
+    .command('escalate <id>')
+    .description('Hand a question you hold (as the PM) to a human, saying why')
+    .requiredOption('-m, --message <why>', 'Why a human must decide, and the options you see')
+    .action(async (id: string, opts) => {
+      const by = process.env.ORCH_AGENT_NAME;
+      if (!by) throw new InvalidArgumentsError('Only an agent holding the question escalates it; as a human, answer it: orch decision answer ' + id);
+      const d = await container.decisionService.escalate(id, { by, note: opts.message });
+      if (container.context.json) {
+        console.log(JSON.stringify(d, null, 2));
+        return;
+      }
+      printSuccess(`Escalated ${id} to a human`);
+      console.log('  End your run with a short summary.');
+    });
+
+  decision
     .command('answer <id>')
     .description('Answer a pending decision; the task continues (or is approved / cancelled)')
     .option('-c, --choose <option>', 'One of the options (its text or number)')
@@ -135,12 +167,18 @@ export function registerDecisionCommand(program: Command, container: LightContai
     .action(async (id: string, opts) => {
       if (opts.approve && opts.cancel) throw new InvalidArgumentsError('Use either --approve or --cancel, not both');
       const action: DecisionAction = opts.approve ? 'approve' : opts.cancel ? 'cancel' : 'continue';
+      const agent = process.env.ORCH_AGENT_NAME;
       const result = await container.decisionService.answer(id, {
         choice: opts.choose,
         message: opts.message,
         action,
         scope: opts.project ? 'project' : 'task',
-      });
+      }, agent ? { agent } : {});
+      if (agent && !container.context.json) {
+        printSuccess(`Answered ${id}: ${describeAnswer(result.decision)}`);
+        console.log('  The teammate continues with your answer. End your run with a short summary.');
+        return;
+      }
 
       if (container.context.json) {
         console.log(JSON.stringify(result, null, 2));
@@ -172,4 +210,10 @@ export function registerDecisionCommand(program: Command, container: LightContai
         console.log(`  Task ${taskId} approved → ${outcome.status === 'queued' ? 'the running orchestrator merges it' : outcome.status}${'detail' in outcome ? ` (${outcome.detail})` : ''}`);
       }
     });
+}
+
+function groupBy<T>(items: readonly T[], key: (item: T) => string): Map<string, T[]> {
+  const map = new Map<string, T[]>();
+  for (const item of items) map.set(key(item), [...(map.get(key(item)) ?? []), item]);
+  return map;
 }

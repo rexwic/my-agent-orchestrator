@@ -144,7 +144,17 @@ export class StructuredLogger {
         return {
           ts, level: 'warn', event: event.type, decisionId: event.decisionId, source: event.source,
           ...(event.taskId ? { taskId: event.taskId } : {}), question: event.question,
+          ...(event.assignee ? { assignee: event.assignee } : {}),
         };
+
+      case 'decision:escalated':
+        return {
+          ts, level: 'warn', event: event.type, decisionId: event.decisionId, ...(event.taskId ? { taskId: event.taskId } : {}),
+          from: event.from, by: event.by, note: event.note,
+        };
+
+      case 'prd:versioned':
+        return { ts, level: event.by === 'human' ? 'info' : 'warn', event: event.type, name: event.name, version: event.version, by: event.by, ...(event.note ? { note: event.note } : {}) };
 
       case 'decision:answered':
         return {

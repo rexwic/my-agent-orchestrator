@@ -29,6 +29,7 @@ const LIGHT_COMMANDS: Record<string, (program: Command, container: LightContaine
   role:    async (p, c) => { const m = await import('../cli/commands/role.js');    m.registerRoleCommand(p, c); },
   decision: async (p, c) => { const m = await import('../cli/commands/decision.js'); m.registerDecisionCommand(p, c); },
   plan:    async (p, c) => { const m = await import('../cli/commands/plan.js');    m.registerPlanCommand(p, c); },
+  prd:     async (p, c) => { const m = await import('../cli/commands/prd.js');     m.registerPrdCommand(p, c); },
   org:     async (p, c) => { const m = await import('../cli/commands/org.js');     m.registerOrgCommand(p, c); },
 };
 
@@ -70,6 +71,7 @@ const COMMAND_STUBS: Array<[name: string, description: string]> = [
   ['role',    'Manage roles (model/effort per role, N agents each)'],
   ['decision', 'Decisions for a human (agent questions, loop escalations, gates, plans)'],
   ['plan',    'Plan a requirement with a planner agent; approve it to create the tasks'],
+  ['prd',     'Product requirements (PRD) with versions, drafted by the PM role'],
   ['org',     'Pre-built AI companies'],
   ['run',     'Run tasks'],
   ['doctor',  'Check adapters and dependencies'],

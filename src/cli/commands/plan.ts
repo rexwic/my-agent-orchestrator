@@ -78,8 +78,15 @@ export function registerPlanCommand(program: Command, container: LightContainer)
     .option('-f, --file <path>', 'Read the requirement from a file (e.g. a PRD)')
     .option('-t, --title <title>', 'Short title (default: first line of the requirement)')
     .option('--role <name>', 'Planner role (default: config planner.role, else "planner")')
+    .option('--prd <name>', 'Plan the latest version of this PRD (orch prd list)')
     .action(async (words: string[] | undefined, opts) => {
       let requirement = (words ?? []).join(' ').trim();
+      let prd: { name: string; version: number } | undefined;
+      if (opts.prd) {
+        const v = await container.prdService.get(opts.prd);
+        prd = { name: v.name, version: v.version };
+        requirement = [requirement, v.content].filter(Boolean).join('\n\n');
+      }
       if (opts.file) {
         const fromFile = await fs.readFile(path.resolve(opts.file), 'utf8').catch(() => {
           throw new InvalidArgumentsError(`Cannot read requirement file: ${opts.file}`);
@@ -93,6 +100,7 @@ export function registerPlanCommand(program: Command, container: LightContainer)
         requirement,
         ...(opts.role ? { role: opts.role } : {}),
         ...(opts.title ? { title: opts.title } : {}),
+        ...(prd ? { prd } : {}),
       });
       if (container.context.json) {
         console.log(JSON.stringify({ plan: created, task }, null, 2));
@@ -153,8 +161,10 @@ export function registerPlanCommand(program: Command, container: LightContainer)
       if (p.submitted_at) pairs.push(['Submitted', `${p.submitted_at} by ${p.submitted_by ?? '?'}`]);
       if (p.decision_id) pairs.push(['Decision', p.decision_id]);
       if (p.goal_id) pairs.push(['Goal', p.goal_id]);
+      if (p.prd) pairs.push(['PRD', `${p.prd.name} v${p.prd.version}${p.status === 'awaiting_approval' ? amber(' — approved together with this plan') : ''}`]);
       printKeyValue(pairs);
-      console.log(`\n${dim('  Requirement')}\n${p.requirement.slice(0, 2000).replace(/^/gm, '  ')}`);
+      console.log(`\n${dim(p.prd ? `  Requirement (PRD ${p.prd.name} v${p.prd.version})` : '  Requirement')}\n${p.requirement.slice(0, 2000).replace(/^/gm, '  ')}`);
+      if (p.prd && p.requirement.length > 2000) console.log(dim(`  … the whole PRD: orch prd show ${p.prd.name} ${p.prd.version}`));
       if (p.feedback && p.status === 'planning') console.log(`\n${dim('  Sent back with')}\n  ${p.feedback}`);
 
       if (!p.draft) {

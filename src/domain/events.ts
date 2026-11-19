@@ -25,7 +25,9 @@ export type OrchestratorEvent =
   | { type: 'role:synced'; created: string[]; updated: string[]; removed: string[] }
   | { type: 'task:dependency_cycle'; taskIds: string[] }
   | { type: 'task:approved'; taskId: string }
-  | { type: 'decision:requested'; decisionId: string; taskId?: string; source: import('./decision.js').DecisionSource; question: string }
+  | { type: 'decision:requested'; decisionId: string; taskId?: string; source: import('./decision.js').DecisionSource; question: string; assignee?: string }
+  | { type: 'decision:escalated'; decisionId: string; taskId?: string; from: string; by: string; note: string }
+  | { type: 'prd:versioned'; name: string; version: number; by: string; note?: string }
   | { type: 'task:delivered'; taskId: string; status: import('./deliverable.js').DeliveryStatus; by: string }
   | { type: 'plan:submitted'; planId: string; revision: number; tasks: number; decisionId: string }
   | { type: 'plan:approved'; planId: string; goalId: string; taskIds: string[] }

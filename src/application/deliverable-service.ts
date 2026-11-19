@@ -55,8 +55,9 @@ export class DeliverableService {
   }
 
   /** Whether a run of `task` by an agent with this adapter must end with a report. */
-  requiresReport(task: Task, adapter: string | undefined): boolean {
-    return needsDeliveryReport(task, adapter, this.required);
+  async requiresReport(task: Task, adapter: string | undefined): Promise<boolean> {
+    const role = task.role && this.deps.roleStore ? await this.deps.roleStore.get(task.role).catch(() => null) : null;
+    return needsDeliveryReport(task, adapter, this.required, role?.deliverable?.required);
   }
 
   /** Sections the task's role requires, and the files the task must produce. */

@@ -9,7 +9,7 @@
 
 import type { OrchestratorConfig } from './domain/config.js';
 import type { CliContext } from './cli/context.js';
-import type { ITaskStore, IAgentStore, IRunStore, IStateStore, IConfigStore, IContextStore, IMessageStore, IGoalStore, ITeamStore, IQuotaStore, IRoleStore, IDecisionStore, IPlanStore, IDeliverableStore } from './infrastructure/storage/interfaces.js';
+import type { ITaskStore, IAgentStore, IRunStore, IStateStore, IConfigStore, IContextStore, IMessageStore, IGoalStore, ITeamStore, IQuotaStore, IRoleStore, IDecisionStore, IPlanStore, IDeliverableStore, IPrdStore } from './infrastructure/storage/interfaces.js';
 import type { IWorkspaceManager } from './infrastructure/workspace/interface.js';
 import type { ITemplateEngine } from './infrastructure/template/template-engine.js';
 import type { IProcessManager } from './infrastructure/process/process-manager.js';
@@ -33,6 +33,7 @@ import { RoleStore } from './infrastructure/storage/role-store.js';
 import { DecisionStore } from './infrastructure/storage/decision-store.js';
 import { PlanStore } from './infrastructure/storage/plan-store.js';
 import { DeliverableStore } from './infrastructure/storage/deliverable-store.js';
+import { PrdStore } from './infrastructure/storage/prd-store.js';
 
 import { EventBus } from './application/event-bus.js';
 import { TaskService } from './application/task-service.js';
@@ -46,6 +47,8 @@ import { RoleService } from './application/role-service.js';
 import { DecisionService } from './application/decision-service.js';
 import { PlanService } from './application/plan-service.js';
 import { DeliverableService } from './application/deliverable-service.js';
+import { PrdService } from './application/prd-service.js';
+import { PmService } from './application/pm-service.js';
 
 import type { Orchestrator } from './application/orchestrator.js';
 import type { DoctorService } from './application/doctor-service.js';
@@ -75,6 +78,7 @@ export interface LightContainer {
   decisionStore: IDecisionStore;
   planStore: IPlanStore;
   deliverableStore: IDeliverableStore;
+  prdStore: IPrdStore;
 
   // Application — services only
   eventBus: EventBus;
@@ -91,6 +95,8 @@ export interface LightContainer {
   decisionService: DecisionService;
   planService: PlanService;
   deliverableService: DeliverableService;
+  prdService: PrdService;
+  pmService: PmService;
 }
 
 /** Full container — everything from light + orchestrator, adapters, workspace, template. */
@@ -136,6 +142,7 @@ export async function buildLightContainer(context: CliContext): Promise<LightCon
   const decisionStore = new DecisionStore(paths);
   const planStore = new PlanStore(paths);
   const deliverableStore = new DeliverableStore(paths);
+  const prdStore = new PrdStore(paths);
 
   // Application — services
   const eventBus = new EventBus();
@@ -151,6 +158,9 @@ export async function buildLightContainer(context: CliContext): Promise<LightCon
   // Registers itself on decisionService: answering a plan's decision approves / revises / cancels it.
   const planService = new PlanService({ store: planStore, taskStore, taskService, goalService, decisionService, roleStore, eventBus, config, projectRoot: context.projectRoot });
   const deliverableService = new DeliverableService({ store: deliverableStore, taskStore, roleStore, eventBus, config });
+  const prdService = new PrdService({ store: prdStore, taskService, roleStore, eventBus, config, planService });
+  // Routes agents' questions to the PM role first (registers itself on decisionService).
+  const pmService = new PmService({ decisionService, taskService, taskStore, roleStore, eventBus, config });
 
   return {
     context,
@@ -172,6 +182,7 @@ export async function buildLightContainer(context: CliContext): Promise<LightCon
     decisionStore,
     planStore,
     deliverableStore,
+    prdStore,
     eventBus,
     taskService,
     agentService,
@@ -184,6 +195,8 @@ export async function buildLightContainer(context: CliContext): Promise<LightCon
     decisionService,
     planService,
     deliverableService,
+    prdService,
+    pmService,
   };
 }
 
@@ -280,6 +293,8 @@ export async function buildFullContainer(context: CliContext): Promise<Container
     decisionService: light.decisionService,
     planService: light.planService,
     deliverableService: light.deliverableService,
+    prdService: light.prdService,
+    pmService: light.pmService,
     // `orch` launchers for agents (so they can request decisions), when running from the orch CLI.
     prepareAgentBin: async () => {
       const entry = cliEntryFromArgv();

@@ -599,6 +599,43 @@ describe('system/user template split', () => {
     expect(rendered).toContain('orch task deliver report.md --status <status>');
   });
 
+  it('user template gives a task the PRD it implements', async () => {
+    const ctx = buildPromptContext(makeTask(), makeAgent(), 1, '/workspace', DEFAULT_CONFIG, {
+      prd: { name: 'discount', version: 3, content: '# Discount\n1. Percent, max 50%', truncated: true },
+    });
+    const rendered = await engine.render(DEFAULT_USER_TEMPLATE, ctx);
+    expect(rendered).toContain('## Product requirements (PRD discount v3)');
+    expect(rendered).toContain('1. Percent, max 50%');
+    expect(rendered).toContain('orch prd show discount');
+    expect(rendered).not.toContain('write the PRD');
+  });
+
+  it('user template tells the PM how to draft a PRD (with the current version to update)', async () => {
+    const ctx = buildPromptContext(makeTask(), makeAgent(), 1, '/workspace', DEFAULT_CONFIG, {
+      prd: { name: 'discount', version: 1, content: '# v1 text', drafting: { next_version: 2 } },
+    });
+    const rendered = await engine.render(DEFAULT_USER_TEMPLATE, ctx);
+    expect(rendered).toContain('## Your job: write the PRD, do not implement it');
+    expect(rendered).toContain('named `discount`, version 2');
+    expect(rendered).toContain('orch prd add discount -f prd.md');
+    expect(rendered).toContain('### Current PRD (discount v1)');
+    expect(rendered).not.toContain('## Product requirements (PRD');
+  });
+
+  it("user template tells the PM how to answer or escalate a teammate's question", async () => {
+    const ctx = buildPromptContext(makeTask(), makeAgent(), 1, '/workspace', DEFAULT_CONFIG, {
+      prd: { name: 'discount', version: 2, content: 'x' },
+      triage: { decision_id: 'dec_q', question: 'Percent or fixed?', options: ['percent', 'fixed'], asked_by: 'backend-1', asking_task: { id: 'tsk_be', title: 'Discount API' } },
+    });
+    const rendered = await engine.render(DEFAULT_USER_TEMPLATE, ctx);
+    expect(rendered).toContain("## Your job: answer a teammate's question");
+    expect(rendered).toContain('backend-1 asked `dec_q` while working on "Discount API" (tsk_be)');
+    expect(rendered).toContain('**Options:** 1. percent · 2. fixed');
+    expect(rendered).toContain('orch decision answer dec_q -m "<answer>"');
+    expect(rendered).toContain('orch prd add discount -f prd.md -m "<what changed, for dec_q>"');
+    expect(rendered).toContain('orch decision escalate dec_q');
+  });
+
   it('user template gives the contracts the task follows, as authoritative', async () => {
     const ctx = buildPromptContext(makeTask(), makeAgent(), 1, '/workspace', DEFAULT_CONFIG, {
       contracts: [

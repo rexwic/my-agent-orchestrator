@@ -22,7 +22,9 @@ import {
   type DecisionAnswerInput,
   type DecisionRequest,
 } from '../domain/decision.js';
+import { MAX_CONTEXT_LENGTH } from '../domain/decision.js';
 import { InvalidArgumentsError, InvalidTransitionError, TaskNotFoundError } from '../domain/errors.js';
+import { roleAgentIndex } from '../domain/role.js';
 import { isTerminal } from '../domain/transitions.js';
 import type { Task } from '../domain/task.js';
 import type { IDecisionStore, ITaskStore } from '../infrastructure/storage/interfaces.js';
@@ -43,8 +45,20 @@ export interface AnswerResult {
 /** Runs when a decision is answered, before the answer is recorded (throw to reject it). */
 export type DecisionAnswerHook = (decision: Decision) => Promise<void>;
 
+/**
+ * Picks who answers a new decision first: a role (e.g. the PM, with a task to
+ * answer it) or nobody (a human). `asker` is the task it is about.
+ */
+export type DecisionRouter = (decision: Decision, asker: Task | null) => Promise<{ assignee: string; triage_task_id: string } | undefined>;
+
+/** Who answers: a human (default) or an agent ($ORCH_AGENT_NAME). */
+export interface DecisionActor {
+  agent?: string;
+}
+
 export class DecisionService {
   private readonly answerHooks: DecisionAnswerHook[] = [];
+  private router: DecisionRouter | undefined;
 
   constructor(
     private readonly store: IDecisionStore,
@@ -52,6 +66,11 @@ export class DecisionService {
     private readonly taskService: TaskService,
     private readonly eventBus: EventBus,
   ) {}
+
+  /** Set who answers new decisions first (see DecisionRouter). */
+  setRouter(router: DecisionRouter): void {
+    this.router = router;
+  }
 
   /** Register a hook run on every answer (see DecisionAnswerHook). */
   onAnswer(hook: DecisionAnswerHook): void {
@@ -81,6 +100,11 @@ export class DecisionService {
       requested_by: req.requested_by ?? (req.source === 'escalation' ? 'orch' : 'human'),
       created_at: new Date().toISOString(),
     };
+    const routed = this.router ? await this.router(decision, task) : undefined;
+    if (routed) {
+      decision.assignee = routed.assignee;
+      decision.triage_task_id = routed.triage_task_id;
+    }
     await this.store.save(decision);
 
     // A running task is moved when its run ends (the orchestrator owns it meanwhile).
@@ -94,6 +118,7 @@ export class DecisionService {
       ...(decision.task_id ? { taskId: decision.task_id } : {}),
       source: decision.source,
       question: decision.question,
+      ...(decision.assignee ? { assignee: decision.assignee } : {}),
     });
     return decision;
   }
@@ -104,9 +129,39 @@ export class DecisionService {
     return decision;
   }
 
-  async list(filter: { status?: Decision['status']; taskId?: string } = {}): Promise<Decision[]> {
+  /** `assignee: 'human'` = decisions no role holds (a human's queue); a role name = that role's. */
+  async list(filter: { status?: Decision['status']; taskId?: string; assignee?: string } = {}): Promise<Decision[]> {
     return (await this.store.list()).filter((d) =>
-      (!filter.status || d.status === filter.status) && (!filter.taskId || d.task_id === filter.taskId));
+      (!filter.status || d.status === filter.status) && (!filter.taskId || d.task_id === filter.taskId)
+      && (!filter.assignee || (filter.assignee === 'human' ? !d.assignee : d.assignee === filter.assignee)));
+  }
+
+  /**
+   * Hand a decision a role holds (the PM) to a human, with the reason added to
+   * its background. `by` is the agent that escalates it, or "orch".
+   */
+  async escalate(id: string, input: { by: string; note: string }): Promise<Decision> {
+    const decision = await this.get(id);
+    if (decision.status !== 'pending') throw new InvalidArgumentsError(`${id} was already answered`);
+    if (!decision.assignee) throw new InvalidArgumentsError(`${id} is not assigned to a role; it already waits for a human`);
+    if (input.by !== 'orch' && roleAgentIndex(decision.assignee, input.by) === null) {
+      throw new InvalidArgumentsError(`${id} is assigned to the ${decision.assignee} role; ${input.by} cannot escalate it`);
+    }
+    const note = input.note.trim();
+    if (!note) throw new InvalidArgumentsError('Say why a human must decide', 'orch decision escalate <id> -m "<why>"');
+    const role = decision.assignee;
+    delete decision.assignee;
+    decision.context = [decision.context, `${input.by} escalated it: ${note}`].filter(Boolean).join('\n\n').slice(-MAX_CONTEXT_LENGTH);
+    await this.store.save(decision);
+    this.eventBus.emit({
+      type: 'decision:escalated',
+      decisionId: id,
+      ...(decision.task_id ? { taskId: decision.task_id } : {}),
+      from: role,
+      by: input.by,
+      note,
+    });
+    return decision;
   }
 
   /** Update the question/background of a pending decision (e.g. a plan submitted again). */
@@ -129,12 +184,24 @@ export class DecisionService {
     return this.list({ status: 'pending', taskId });
   }
 
-  async answer(id: string, input: DecisionAnswerInput): Promise<AnswerResult> {
+  async answer(id: string, input: DecisionAnswerInput, actor: DecisionActor = {}): Promise<AnswerResult> {
     const decision = await this.get(id);
     if (decision.status !== 'pending') {
       throw new InvalidArgumentsError(`${id} was already answered: ${describeAnswer(decision)}`);
     }
-    decision.answer = resolveDecisionAnswer(decision, input);
+    if (actor.agent) {
+      if (!decision.assignee) throw new InvalidArgumentsError(`${id} is for a human; agents cannot answer it`);
+      if (roleAgentIndex(decision.assignee, actor.agent) === null) {
+        throw new InvalidArgumentsError(`${id} is assigned to the ${decision.assignee} role; ${actor.agent} cannot answer it`);
+      }
+      if ((input.action ?? 'continue') !== 'continue' || input.scope === 'project') {
+        throw new InvalidArgumentsError(
+          `As ${decision.assignee} you can only answer the question (the task continues); approving, cancelling and project-wide rules are for a human`,
+          'Answer with --choose / -m; put lasting rules into the PRD (orch prd add); or hand it over: orch decision escalate <id> -m "<why>"',
+        );
+      }
+    }
+    decision.answer = { ...resolveDecisionAnswer(decision, input), answered_by: actor.agent ?? 'human' };
     decision.status = 'answered';
     for (const hook of this.answerHooks) await hook(structuredClone(decision));
     await this.store.save(decision);
@@ -145,6 +212,14 @@ export class DecisionService {
       action: decision.answer.action,
       scope: decision.answer.scope,
     });
+
+    // A human answered before the PM got to it: its queued task is not needed any more.
+    if (decision.triage_task_id && !actor.agent) {
+      const pmTask = await this.taskStore.get(decision.triage_task_id).catch(() => null);
+      if (pmTask && (pmTask.status === 'todo' || pmTask.status === 'retrying')) {
+        await this.taskService.updateStatus(pmTask.id, 'cancelled').catch(() => {});
+      }
+    }
 
     if (!decision.task_id) return { decision, stillPending: 0 };
     const stillPending = (await this.pendingFor(decision.task_id)).length;
@@ -200,8 +275,9 @@ export class DecisionService {
 
 /** Feedback for the agent that continues after a decision. */
 export function buildDecisionFeedback(decision: Decision): string {
+  const by = decision.answer?.answered_by;
   const lines = [
-    `A human answered a question about this task.`,
+    by && by !== 'human' ? `${by} (PM) answered a question about this task.` : 'A human answered a question about this task.',
     `Question: ${decision.question}`,
     `Answer: ${describeAnswer(decision)}`,
   ];

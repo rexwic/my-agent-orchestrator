@@ -87,6 +87,10 @@ export interface OrchestratorDeps {
   planService?: import('./plan-service.js').PlanService;
   /** Delivery reports: required at the end of a run, shown to dependent tasks. */
   deliverableService?: DeliverableService;
+  /** PRDs: drafting tasks, the PRD in prompts, planning a drafted PRD. */
+  prdService?: import('./prd-service.js').PrdService;
+  /** PM answering agents' questions: the PM's task prompt and how it ends. */
+  pmService?: import('./pm-service.js').PmService;
   /** Prepares a directory with an `orch` launcher to put first on agents' PATH. */
   prepareAgentBin?: () => Promise<string | undefined>;
   config: OrchestratorConfig;
@@ -1260,18 +1264,22 @@ export class Orchestrator {
       const deliverables = this.deps.deliverableService;
       const [delivery, upstream] = deliverables
         ? await Promise.all([
-          deliverables.requiresReport(task, agent.adapter) ? deliverables.contractFor(task).catch(() => undefined) : undefined,
+          deliverables.requiresReport(task, agent.adapter).then((yes) => (yes ? deliverables.contractFor(task) : undefined)).catch(() => undefined),
           task.depends_on.length ? deliverables.upstreamFor(task).catch(() => []) : [],
         ])
         : [undefined, []];
       const contracts = task.uses?.length ? await readContractFiles(workspacePath, task.uses).catch(() => []) : [];
+      const [prd, triage] = await Promise.all([
+        this.deps.prdService ? this.deps.prdService.promptContext(task).catch(() => undefined) : undefined,
+        this.deps.pmService ? this.deps.pmService.promptContext(task).catch(() => undefined) : undefined,
+      ]);
       const context = buildPromptContext(
         task,
         agent,
         attempt,
         workspacePath,
         this.deps.config,
-        { allAgents, retryContext, sharedContext, feedback: task.feedback, messages: pendingMessages.length ? pendingMessages : undefined, goal: goalContext, decisions, planning, delivery, upstream, contracts },
+        { allAgents, retryContext, sharedContext, feedback: task.feedback, messages: pendingMessages.length ? pendingMessages : undefined, goal: goalContext, decisions, planning, delivery, upstream, contracts, prd, triage },
       );
 
       // Render prompt(s) — split mode for caching, legacy mode for backward compat
@@ -1664,23 +1672,20 @@ export class Orchestrator {
     const task = await this.deps.taskStore.get(taskId);
     if (!task) return;
 
-    // A planner that ended without submitting its plan failed (it is retried).
+    // Paperwork (a plan, a PRD, a PM answer) that ended without handing it in failed (it is retried).
     let pendingDecision = await this.hasPendingDecision(taskId);
-    const isPlanning = Boolean(task.plan_id && this.deps.planService);
-    if (isPlanning && !pendingDecision && await this.deps.planService!.planningRunOutcome(task) === 'missing') {
-      return this._handleRunFailure(
-        taskId,
-        state.running[taskId]!,
-        'The planner ended its run without submitting a plan. Write the plan file and run: orch plan submit <file>',
-      ).then(() => undefined);
+    const paperwork = await this.paperworkOutcome(task);
+    const isPaperwork = Boolean(paperwork);
+    if (paperwork && !pendingDecision && paperwork.outcome === 'missing') {
+      return this._handleRunFailure(taskId, state.running[taskId]!, paperwork.missing).then(() => undefined);
     }
 
     // Every agent ends with a delivery report: none is a failed run (retried with
     // the reason); partial / blocked waits for a human.
     const deliverables = this.deps.deliverableService;
-    if (!isPlanning && !pendingDecision && deliverables) {
+    if (!isPaperwork && !pendingDecision && deliverables) {
       const runAgent = await this.deps.agentStore.get(agentId);
-      if (deliverables.requiresReport(task, runAgent?.adapter)) {
+      if (await deliverables.requiresReport(task, runAgent?.adapter)) {
         const delivered = await deliverables.runOutcome(task, state.running[taskId]!.started_at);
         if (delivered === 'missing') {
           return this._handleRunFailure(
@@ -1728,7 +1733,7 @@ export class Orchestrator {
     // A planning task is finished once its plan is submitted (review → done below).
     const newStatus: import('../domain/task.js').TaskStatus = pendingDecision
       ? 'waiting_decision'
-      : isPlanning ? 'review' : resolveCompletionStatus(task, true, autoApprove);
+      : isPaperwork ? 'review' : resolveCompletionStatus(task, true, autoApprove);
 
     // Finish run first (emits agent:completed)
     await this.deps.runService.finish(runId, 'succeeded', tokens);
@@ -1816,8 +1821,8 @@ export class Orchestrator {
     // Worktree tasks first get main merged in (IntegrationService). Git and review
     // work runs after the lock is released (see handleRunSuccess).
     let pendingReview: PendingCompletion | undefined;
-    if (isPlanning && newStatus === 'review') {
-      await this.finishPlanningTask(task);
+    if (isPaperwork && newStatus === 'review') {
+      await this.finishPaperworkTask(task);
     } else if (newStatus === 'review') {
       if (isWorktree) {
         pendingReview = { kind: 'integrate', autoApprove };
@@ -1925,9 +1930,8 @@ export class Orchestrator {
     const task = await this.deps.taskStore.get(taskId);
     if (!task) return;
 
-    // A planner that submitted its plan and then crashed still did its job.
-    if (task.plan_id && this.deps.planService && !(await this.hasPendingDecision(taskId))
-      && await this.deps.planService.planningRunOutcome(task) === 'submitted') {
+    // Paperwork handed in before a crash still did its job.
+    if (!(await this.hasPendingDecision(taskId)) && (await this.paperworkOutcome(task))?.outcome === 'submitted') {
       await this._handleRunSuccess(taskId, entry.run_id, entry.agent_id);
       return;
     }
@@ -2028,6 +2032,48 @@ export class Orchestrator {
    * Planning task done: the plan is with a human (or already decided). The
    * planner only read code, so its worktree is removed without merging.
    */
+  /**
+   * Tasks that hand in something other than code: a plan, a PRD, a PM answer.
+   * Undefined for ordinary tasks.
+   */
+  private async paperworkOutcome(task: Task): Promise<{ outcome: 'submitted' | 'missing'; missing: string } | undefined> {
+    if (task.plan_id && this.deps.planService) {
+      return {
+        outcome: await this.deps.planService.planningRunOutcome(task),
+        missing: 'The planner ended its run without submitting a plan. Write the plan file and run: orch plan submit <file>',
+      };
+    }
+    if (task.prd_draft && this.deps.prdService) {
+      return {
+        outcome: await this.deps.prdService.draftOutcome(task),
+        missing: `You ended your run without handing in the PRD. Write it and run: orch prd add ${task.prd_draft} -f prd.md -m "<what it covers>"`,
+      };
+    }
+    if (task.triage_decision_id && this.deps.pmService) {
+      const id = task.triage_decision_id;
+      return {
+        outcome: await this.deps.pmService.triageOutcome(task),
+        missing: `You ended your run without answering ${id}. Run: orch decision answer ${id} -m "<answer>" — or, if a human must decide: orch decision escalate ${id} -m "<why>"`,
+      };
+    }
+    return undefined;
+  }
+
+  /** Paperwork handed in: done (nothing to commit or merge); a drafted PRD is planned next. */
+  private async finishPaperworkTask(task: Task): Promise<void> {
+    await this.finishPlanningTask(task);
+    if (task.prd_draft && this.deps.prdService) {
+      await this.deps.prdService.draftFinished(task).catch((err: unknown) => {
+        this.deps.eventBus.emit({
+          type: 'orchestrator:error',
+          error: err instanceof Error ? err.message : String(err),
+          context: `planning PRD ${task.prd_draft} after task ${task.id}`,
+          fatal: false,
+        });
+      });
+    }
+  }
+
   private async finishPlanningTask(task: Task): Promise<void> {
     if (task.proof?.branch || task.workspace) {
       await this.deps.workspaceManager.cleanup(task.id, task.proof?.branch).catch((err) => {

@@ -24,6 +24,8 @@ export interface RoleTaskDefaults {
 export interface RoleDeliverable {
   /** Required report sections (`## <name>` headings); replaces the default ones. */
   sections?: string[];
+  /** Whether this role's tasks need a report (default: yes, except shell roles). */
+  required?: boolean;
 }
 
 export interface Role {
@@ -179,10 +181,19 @@ export function validateRole(raw: unknown, expectedName?: string): Role {
   let deliverable: RoleDeliverable | undefined;
   const dl = r['deliverable'];
   if (dl !== undefined && dl !== null) {
-    const secs = typeof dl === 'object' && !Array.isArray(dl) ? (dl as Record<string, unknown>)['sections'] : undefined;
-    if (typeof dl !== 'object' || Array.isArray(dl) || (secs !== undefined && (!Array.isArray(secs) || secs.some((s) => typeof s !== 'string' || !s.trim())))) {
+    const d = typeof dl === 'object' && !Array.isArray(dl) ? (dl as Record<string, unknown>) : undefined;
+    const secs = d?.['sections'];
+    const req = d?.['required'];
+    if (!d || (secs !== undefined && (!Array.isArray(secs) || secs.some((s) => typeof s !== 'string' || !s.trim())))) {
       errors.push('deliverable must be a map with sections: a list of section names');
-    } else if (Array.isArray(secs)) deliverable = { sections: (secs as string[]).map((s) => s.trim()) };
+    } else if (req !== undefined && typeof req !== 'boolean') {
+      errors.push('deliverable.required must be true or false');
+    } else {
+      deliverable = {
+        ...(Array.isArray(secs) ? { sections: (secs as string[]).map((s) => s.trim()) } : {}),
+        ...(typeof req === 'boolean' ? { required: req } : {}),
+      };
+    }
   }
 
   const role: Role = {
@@ -205,7 +216,7 @@ export function validateRole(raw: unknown, expectedName?: string): Role {
   const stall = posInt('stall_timeout_ms', r['stall_timeout_ms']); if (stall !== undefined) role.stall_timeout_ms = stall;
   if (command) role.command = command;
   if (taskDefaults && Object.keys(taskDefaults).length) role.task_defaults = taskDefaults;
-  if (deliverable?.sections?.length) role.deliverable = deliverable;
+  if (deliverable && Object.keys(deliverable).length) role.deliverable = deliverable;
 
   if (errors.length) {
     throw new InvalidArgumentsError(`Invalid role${name ? ` "${name}"` : ''}: ${errors.join('; ')}`);

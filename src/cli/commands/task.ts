@@ -44,6 +44,7 @@ export function registerTaskCommand(program: Command, container: LightContainer)
     .option('--scope <patterns>', 'Comma-separated glob patterns for file scope (e.g. src/auth/**,src/session/**)')
     .option('--goal-id <goalId>', 'Associate task with a goal')
     .option('--produces <paths>', 'Comma-separated files (or globs) the task must produce; its delivery report is checked against them')
+    .option('--prd <name>', 'PRD this task implements (its latest version goes into the prompt)')
     .option('--uses <paths>', 'Comma-separated contract files the task follows and must not change (e.g. docs/api/discount.yaml)')
     .option('--attach <paths>', 'Comma-separated file paths to attach (screenshots, docs)')
     .option('--needs-decision [question]', 'Gate: a human must approve (orch decision answer) before it starts')
@@ -76,6 +77,7 @@ export function registerTaskCommand(program: Command, container: LightContainer)
         needs_decision: Boolean(opts.needsDecision),
         produces: opts.produces?.split(',').map((s: string) => s.trim()),
         uses: opts.uses?.split(',').map((s: string) => s.trim()),
+        ...(opts.prd ? { prd: (await container.prdService.get(opts.prd)).name } : {}),
       });
 
       let gate: import('../../domain/decision.js').Decision | undefined;

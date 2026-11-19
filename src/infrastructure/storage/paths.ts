@@ -118,6 +118,14 @@ export class Paths {
     return path.join(this.plansDir, `${sanitizeId(id)}.yml`);
   }
 
+  get prdsDir(): string {
+    return path.join(this.root, 'prds');
+  }
+
+  prdDir(name: string): string {
+    return path.join(this.prdsDir, sanitizeId(name));
+  }
+
   get deliverablesDir(): string {
     return path.join(this.root, 'deliverables');
   }

@@ -175,3 +175,50 @@ describe('planning prompt', () => {
     expect(ctx.planning).toMatchObject({ plan_id: 'pln_x', roles: [{ name: 'backend', agents: 2 }] });
   });
 });
+
+describe('PRD drafts and PM answers end like plans', () => {
+  /** Task tsk_doc (a PRD draft or a PM answer) is running in a worktree. */
+  async function paperwork(fields: Partial<Task>, outcome: 'submitted' | 'missing') {
+    const taskStore = createMockTaskStore([{
+      id: 'tsk_doc', title: 'Doc', description: '', status: 'in_progress', priority: 3, role: 'pm', labels: [], depends_on: [],
+      created_at: '', updated_at: '', attempts: 1, max_attempts: 3, ...fields,
+      workspace: '/tmp/project/.orchestry/workspaces/tsk_doc', proof: { branch: 'orchestry/tsk_doc/doc', files_changed: [] },
+    }]);
+    const agent = makeAgent({ id: 'agt_pm', name: 'pm-1', adapter: 'claude', status: 'running', current_task: 'tsk_doc', role_id: 'pm' });
+    const runStore = createMockRunStore();
+    await runStore.save(makeRun({ id: 'run_d', task_id: 'tsk_doc', agent_id: 'agt_pm', status: 'streaming' }));
+    const entry = { run_id: 'run_d', task_id: 'tsk_doc', agent_id: 'agt_pm', pid: 1, started_at: new Date().toISOString() };
+    const wm = createMockWorkspaceManager();
+    const deps = buildDeps({ taskStore, runStore, workspaceManager: wm, agentStore: createMockAgentStore([agent]), stateStore: createMockStateStore({ running: { tsk_doc: entry as any } }) });
+    const prdService = { draftOutcome: vi.fn(async () => outcome), draftFinished: vi.fn(async () => 'pln_new'), promptContext: vi.fn(async () => undefined) };
+    const pmService = { triageOutcome: vi.fn(async () => outcome), promptContext: vi.fn(async () => undefined) };
+    deps.prdService = prdService as any;
+    deps.pmService = pmService as any;
+    const orch = new Orchestrator(deps);
+    orchestrators.push(orch);
+    await (orch as any).loadState();
+    await (orch as any).handleRunSuccess('tsk_doc', 'run_d', 'agt_pm', undefined, 'done', []);
+    return { task: (await taskStore.get('tsk_doc'))!, orch, wm, prdService };
+  }
+
+  it('a PRD handed in: done, worktree removed, no merge, the PRD is planned next', async () => {
+    const { task, wm, prdService } = await paperwork({ prd_draft: 'discount' }, 'submitted');
+    expect(task.status).toBe('done');
+    expect(wm.mergeBack).not.toHaveBeenCalled();
+    expect(wm.cleanup).toHaveBeenCalled();
+    expect(prdService.draftFinished).toHaveBeenCalledWith(expect.objectContaining({ id: 'tsk_doc' }));
+  });
+
+  it('no PRD handed in: retried with how to hand it in', async () => {
+    const { task, orch } = await paperwork({ prd_draft: 'discount' }, 'missing');
+    expect(task.status).toBe('retrying');
+    expect((orch as any).state.retry_queue).toContainEqual(expect.objectContaining({ error: expect.stringContaining('orch prd add discount -f prd.md') }));
+  });
+
+  it('a PM answer task: done once answered or escalated, retried otherwise', async () => {
+    expect((await paperwork({ triage_decision_id: 'dec_q' }, 'submitted')).task.status).toBe('done');
+    const missing = await paperwork({ triage_decision_id: 'dec_q' }, 'missing');
+    expect(missing.task.status).toBe('retrying');
+    expect((missing.orch as any).state.retry_queue).toContainEqual(expect.objectContaining({ error: expect.stringMatching(/orch decision answer dec_q.*orch decision escalate dec_q/) }));
+  });
+});

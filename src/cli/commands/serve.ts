@@ -117,7 +117,7 @@ async function runServe(container: Container, currentVersion: string, opts: Serv
         container.taskStore,
         container.eventBus,
         undefined,
-        async () => (await container.decisionService.list({ status: 'pending' })).length,
+        async () => (await container.decisionService.list({ status: 'pending', assignee: 'human' })).length,
       );
 
       logger.log('info', 'serve:finished', {

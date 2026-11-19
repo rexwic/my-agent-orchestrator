@@ -48,6 +48,14 @@ export { DeliverableStore, MemoryDeliverableStore } from './infrastructure/stora
 export { validateReport, needsDeliveryReport, parseDeliveryStatus, DEFAULT_REPORT_SECTIONS, DELIVERY_STATUSES } from './domain/deliverable.js';
 export type { Deliverable, DeliveryStatus } from './domain/deliverable.js';
 export { matchesPattern } from './domain/scope.js';
+export { PrdService } from './application/prd-service.js';
+export type { PrdServiceDeps, AddPrdInput, PrdSummary, PrdPromptContext } from './application/prd-service.js';
+export { PmService } from './application/pm-service.js';
+export type { PmServiceDeps, TriagePromptContext } from './application/pm-service.js';
+export { PrdStore, MemoryPrdStore } from './infrastructure/storage/prd-store.js';
+export { validatePrdName, validatePrdContent, prdNameFrom, DEFAULT_PM_ROLE, MAX_PRD_IN_PROMPT } from './domain/prd.js';
+export type { PrdVersion } from './domain/prd.js';
+export type { DecisionRouter, DecisionActor } from './application/decision-service.js';
 export type { Decision, DecisionAction, DecisionScope, DecisionSource, DecisionRequest, DecisionAnswerInput } from './domain/decision.js';
 export { QuotaStore, MemoryQuotaStore } from './infrastructure/storage/quota-store.js';
 export type { QuotaPause, QuotaState } from './domain/quota.js';

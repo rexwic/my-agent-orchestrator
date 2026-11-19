@@ -128,7 +128,7 @@ describe('delivery prompt', () => {
     const deliverables = new DeliverableService({ store: new MemoryDeliverableStore(), taskStore, eventBus: deps.eventBus, config: DEFAULT_CONFIG });
     // tsk_up is done (submit refuses finished tasks): put its report in place directly.
     await (deliverables as any).deps.store.save({ task_id: 'tsk_up', status: 'done', report, submitted_by: 'backend-1', submitted_at: new Date().toISOString() });
-    vi.spyOn(deliverables, 'requiresReport').mockReturnValue(true);
+    vi.spyOn(deliverables, 'requiresReport').mockResolvedValue(true);
     deps.deliverableService = deliverables;
     const orch = new Orchestrator(deps);
     orchestrators.push(orch);

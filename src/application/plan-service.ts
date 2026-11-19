@@ -59,6 +59,8 @@ export interface StartPlanInput {
   /** Planner role (default: config planner.role, else "planner"). */
   role?: string;
   title?: string;
+  /** The PRD the requirement is (a version of). */
+  prd?: { name: string; version: number };
 }
 
 export interface SubmitPlanInput {
@@ -111,6 +113,7 @@ export class PlanService {
       revision: 1,
       planning_task_id: task.id,
       planning_task_ids: [task.id],
+      ...(input.prd ? { prd: input.prd } : {}),
       created_at: now,
       updated_at: now,
     };
@@ -334,6 +337,7 @@ export class PlanService {
         ...(t.needs_decision ? { needs_decision: true } : {}),
         ...(t.produces ? { produces: t.produces } : {}),
         ...(t.uses ? { uses: t.uses } : {}),
+        ...(plan.prd ? { prd: plan.prd.name } : {}),
       });
       if (t.needs_decision) {
         await this.deps.decisionService.request({
@@ -404,6 +408,7 @@ export class PlanService {
 /** Background for the approval decision: the plan at a glance. */
 function approvalContext(plan: Plan, draft: PlanDraft, warnings: string[]): string {
   const lines: string[] = [];
+  if (plan.prd) lines.push(`Made from PRD ${plan.prd.name} v${plan.prd.version} — approving the plan approves this PRD too (read it: orch prd show ${plan.prd.name} ${plan.prd.version})`, '');
   if (draft.summary) lines.push(draft.summary, '');
   draft.tasks.forEach((t, i) => {
     const after = t.depends_on.length ? ` (after ${t.depends_on.join(', ')})` : '';

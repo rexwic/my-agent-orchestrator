@@ -78,6 +78,8 @@ export interface Plan {
   /** Feedback of the last send-back (shown to the next planner). */
   feedback?: string;
   goal_id?: string;
+  /** PRD the plan was made from (its tasks get the PRD's latest version in their prompt). */
+  prd?: { name: string; version: number };
   /** Plan key → created task ID (filled while approving). */
   created_tasks?: Record<string, string>;
   created_at: string;

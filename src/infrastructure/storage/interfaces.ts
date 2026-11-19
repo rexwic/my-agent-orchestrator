@@ -77,6 +77,14 @@ export interface IPlanStore {
   list(): Promise<import('../../domain/plan.js').Plan[]>;
 }
 
+export interface IPrdStore {
+  save(version: import('../../domain/prd.js').PrdVersion): Promise<void>;
+  get(name: string, version: number): Promise<import('../../domain/prd.js').PrdVersion | null>;
+  /** All versions of a PRD, oldest first. */
+  versions(name: string): Promise<import('../../domain/prd.js').PrdVersion[]>;
+  names(): Promise<string[]>;
+}
+
 export interface IDeliverableStore {
   /** Replaces the task's previous report. */
   save(deliverable: import('../../domain/deliverable.js').Deliverable): Promise<void>;

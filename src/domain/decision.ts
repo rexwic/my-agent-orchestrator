@@ -38,6 +38,8 @@ export interface DecisionAnswer {
   action: DecisionAction;
   scope: DecisionScope;
   answered_at: string;
+  /** "human", or the agent (PM) that answered. */
+  answered_by?: string;
 }
 
 export interface Decision {
@@ -54,6 +56,10 @@ export interface Decision {
   /** Agent name, "orch", or "human". */
   requested_by: string;
   created_at: string;
+  /** Role that answers it first (the PM); unset = a human. */
+  assignee?: string;
+  /** The assignee's task for answering it. */
+  triage_task_id?: string;
   answer?: DecisionAnswer;
 }
 

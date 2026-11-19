@@ -75,6 +75,10 @@ export interface PromptContext {
   delivery?: { sections: string[]; produces: string[] };
   /** Contract files the task follows (uses), read from its workspace. */
   contracts?: import('../workspace/contract-files.js').ContractFile[];
+  /** The PRD the task implements, or drafts (`drafting`). */
+  prd?: { name: string; version: number; content?: string; truncated?: boolean; drafting?: { next_version: number } };
+  /** PM task: the teammate's question to answer. */
+  triage?: { decision_id: string; question: string; options: string[]; context?: string; asked_by: string; asking_task?: { id: string; title: string } };
   /** Reports of the tasks this one depends on. */
   upstream?: Array<{ task_id: string; title: string; status: string; report: string }>;
   shared_context?: Record<string, string>;
@@ -262,6 +266,8 @@ export interface BuildPromptOptions {
   delivery?: PromptContext['delivery'];
   upstream?: PromptContext['upstream'];
   contracts?: PromptContext['contracts'];
+  prd?: PromptContext['prd'];
+  triage?: PromptContext['triage'];
 }
 
 export function buildPromptContext(
@@ -272,7 +278,7 @@ export function buildPromptContext(
   config: OrchestratorConfig,
   options?: BuildPromptOptions,
 ): PromptContext {
-  const { allAgents, retryContext, sharedContext, feedback, messages: rawMessages, goal, decisions, planning, delivery, upstream, contracts } = options ?? {};
+  const { allAgents, retryContext, sharedContext, feedback, messages: rawMessages, goal, decisions, planning, delivery, upstream, contracts, prd, triage } = options ?? {};
 
   // Map messages to prompt-friendly shape
   const agentById = new Map((allAgents ?? []).map((a) => [a.id, a]));
@@ -322,6 +328,8 @@ export function buildPromptContext(
     delivery,
     upstream: upstream?.length ? upstream : undefined,
     contracts: contracts?.length ? contracts : undefined,
+    prd,
+    triage,
     shared_context: sharedContext && Object.keys(sharedContext).length > 0
       ? filterRelevantContext(sharedContext, {
           agentName: agent.name,
@@ -503,6 +511,45 @@ The human's feedback is under Review Feedback above.
 {{ planning.previous_plan }}
 \`\`\`
 {% endif %}
+{% endif %}
+
+{% if prd and prd.drafting %}
+## Your job: write the PRD, do not implement it
+You are the product manager. Turn the requirement above into a PRD (product requirements document) named \`{{ prd.name }}\`, version {{ prd.drafting.next_version }}. Read the code to understand what exists, but do NOT change project files.
+{% if prd.content %}The current version (v{{ prd.version }}) is at the end of this section: update it to cover the requirement; keep what still holds.
+{% endif %}
+**Write it in Markdown with:** Goal · Users and scenarios · Requirements and business rules (numbered and concrete: limits, rounding, error cases) · Acceptance criteria (testable) · Out of scope · Open questions (only ones a human must settle).
+If something only a human can decide blocks the PRD (pricing policy, legal, priorities), ask with \`orch decision request "<question>" --option "<A>" --option "<B>"\` and end your run; you are resumed with the answer.
+
+**Hand it in:** write \`prd.md\` in your working directory and run \`orch prd add {{ prd.name }} -f prd.md -m "<one line: what this version covers>"\`. Then end your run with a short summary: a planner turns it into tasks, and a human approves the PRD together with that plan.
+{% if prd.content %}
+### Current PRD ({{ prd.name }} v{{ prd.version }})
+~~~~
+{{ prd.content }}
+~~~~
+{% endif %}
+{% elsif prd %}
+## Product requirements (PRD {{ prd.name }} v{{ prd.version }})
+This is what the product must do. Follow it. If it is ambiguous or contradicts your task, ask with \`orch decision request\` (the PM answers first).
+~~~~
+{{ prd.content }}
+~~~~
+{% if prd.truncated %}(cut to fit; read all of it with \`orch prd show {{ prd.name }}\`)
+{% endif %}
+{% endif %}
+
+{% if triage %}
+## Your job: answer a teammate's question
+{{ triage.asked_by }} asked \`{{ triage.decision_id }}\`{% if triage.asking_task %} while working on "{{ triage.asking_task.title }}" ({{ triage.asking_task.id }}){% endif %} and waits for the answer. You are the product manager: answer from the PRD and the product's intent. Do NOT change project files.
+
+**Question:** {{ triage.question }}
+{% if triage.options.size > 0 %}**Options:** {% for o in triage.options %}{{ forloop.index }}. {{ o }}{% unless forloop.last %} · {% endunless %}{% endfor %}
+{% endif %}
+- **Answer it:** \`orch decision answer {{ triage.decision_id }} -m "<answer>"\`{% if triage.options.size > 0 %} (or \`--choose <n>\`){% endif %}. The teammate continues with your answer.
+- If the answer adds or changes a requirement, update the PRD first ({% if prd %}\`orch prd add {{ prd.name }} -f prd.md -m "<what changed, for {{ triage.decision_id }}>"\`{% else %}\`orch prd add <name> -f prd.md\`{% endif %}) so every task sees it, then answer.
+- **If only a human can decide** (pricing, legal, priorities, scope beyond the PRD, or you are not sure): \`orch decision escalate {{ triage.decision_id }} -m "<why, and the options you see>"\`.
+
+Then end your run with a short summary.
 {% endif %}
 
 ## When a human must decide

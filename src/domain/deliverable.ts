@@ -83,11 +83,12 @@ export function validateReport(report: string, sections: readonly string[]): str
 
 /**
  * Whether a run of `task` must end with a report. Paperwork tasks (plans, PRD
- * drafts, PM answers) hand in something else; shell roles are scripts;
- * autonomous goal tasks loop.
+ * drafts, PM answers) hand in something else; shell roles are scripts (unless
+ * their role says `deliverable.required: true`); autonomous goal tasks loop.
  */
-export function needsDeliveryReport(task: Task, adapter: string | undefined, required: boolean): boolean {
-  if (!required || adapter === 'shell') return false;
+export function needsDeliveryReport(task: Task, adapter: string | undefined, required: boolean, roleRequires?: boolean): boolean {
+  if (!required) return false;
+  if (roleRequires === false || (roleRequires === undefined && adapter === 'shell')) return false;
   if (task.plan_id || task.prd_draft || task.triage_decision_id) return false;
   return !task.labels?.includes(AUTONOMOUS_LABEL);
 }

@@ -59,6 +59,10 @@ describe('needsDeliveryReport', () => {
     expect(needsDeliveryReport({ ...task, prd_draft: 'discount' }, 'claude', true)).toBe(false);
     expect(needsDeliveryReport({ ...task, triage_decision_id: 'dec_1' }, 'claude', true)).toBe(false);
     expect(needsDeliveryReport({ ...task, labels: ['autonomous'] }, 'claude', true)).toBe(false);
+    // The role decides over the adapter default; the project switch wins over both.
+    expect(needsDeliveryReport(task, 'shell', true, true)).toBe(true);
+    expect(needsDeliveryReport(task, 'claude', true, false)).toBe(false);
+    expect(needsDeliveryReport(task, 'shell', false, true)).toBe(false);
   });
 });
 
