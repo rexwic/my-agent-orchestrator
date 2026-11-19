@@ -79,6 +79,8 @@ export interface PromptContext {
   prd?: { name: string; version: number; content?: string; truncated?: boolean; drafting?: { next_version: number } };
   /** Review task: the work to review (see ReviewService). */
   review?: import('../../application/review-service.js').ReviewPromptContext;
+  /** Bugs: how a verifier files them, how an owner hands one off, what to re-verify. */
+  bugs?: import('../../application/bug-service.js').BugPromptContext;
   /** PM task: the teammate's question to answer. */
   triage?: { decision_id: string; question: string; options: string[]; context?: string; asked_by: string; asking_task?: { id: string; title: string } };
   /** Reports of the tasks this one depends on. */
@@ -271,6 +273,7 @@ export interface BuildPromptOptions {
   prd?: PromptContext['prd'];
   triage?: PromptContext['triage'];
   review?: PromptContext['review'];
+  bugs?: PromptContext['bugs'];
 }
 
 export function buildPromptContext(
@@ -281,7 +284,7 @@ export function buildPromptContext(
   config: OrchestratorConfig,
   options?: BuildPromptOptions,
 ): PromptContext {
-  const { allAgents, retryContext, sharedContext, feedback, messages: rawMessages, goal, decisions, planning, delivery, upstream, contracts, prd, triage, review } = options ?? {};
+  const { allAgents, retryContext, sharedContext, feedback, messages: rawMessages, goal, decisions, planning, delivery, upstream, contracts, prd, triage, review, bugs } = options ?? {};
 
   // Map messages to prompt-friendly shape
   const agentById = new Map((allAgents ?? []).map((a) => [a.id, a]));
@@ -334,6 +337,7 @@ export function buildPromptContext(
     prd,
     triage,
     review,
+    bugs,
     shared_context: sharedContext && Object.keys(sharedContext).length > 0
       ? filterRelevantContext(sharedContext, {
           agentName: agent.name,
@@ -585,6 +589,31 @@ summary: One or two lines on the overall state
     issue: What is wrong and why it matters
     suggestion: How to fix it  # optional
 \`\`\`
+{% endif %}
+
+{% if bugs and bugs.kind == "file" %}
+## Filing bugs
+When something does not work, file one bug per problem — do not fix other roles' code yourself:
+\`orch bug add "<title>" --owner <role> --repro "<steps>" --expected "<what should happen>" --actual "<what happens>" [--contract <file>] [--evidence "<logs, output>"]\`
+- Exactly one owner per bug: {% for o in bugs.owners %}\`{{ o }}\`{% unless forloop.last %}, {% endunless %}{% endfor %}.
+- When frontend and backend disagree, the API contract decides: the side that does not follow the contract owns the bug (pass \`--contract <file>\`). If the contract itself is wrong, ask with \`orch decision request\`.
+- Then finish your task as usual; once the bugs are fixed, ORCH asks you to re-verify them.
+{% endif %}
+{% if bugs and bugs.kind == "bug" %}
+## This is a bug assigned to your role
+Fix it on your side{% if bugs.contract %}, following the contract \`{{ bugs.contract }}\` (it decides who is right){% endif %}. Add a test that reproduces it.
+{% if bugs.can_reassign %}If it is really another role's bug, hand it over once — say why: \`orch bug reassign {{ task.id }} --to <role> -m "<why it is not yours>"\` (roles: {% for o in bugs.owners %}\`{{ o }}\`{% unless forloop.last %}, {% endunless %}{% endfor %}), then end your run.{% else %}It was handed to you already; it cannot be handed on again — fix it, or ask with \`orch decision request\` if you truly cannot.{% endif %}
+{% endif %}
+{% if bugs and bugs.kind == "verify" %}
+## Your job: re-verify these bugs (round {{ bugs.round }})
+Their owners say they are fixed. Check only these — do not change files, and new bugs cannot be filed in this round (mention new problems in your summary):
+{% for b in bugs.bugs %}
+### {{ b.id }} {{ b.title }}{% if b.owner %} ({{ b.owner }}){% endif %}
+Steps: {{ b.repro }}
+Expected: {{ b.expected }}
+Was: {{ b.actual }}
+{% endfor %}
+For each: \`orch bug verify <bug-id> --fixed\` or \`orch bug verify <bug-id> --not-fixed -m "<what you saw>"\`. Then end your run with a short summary; bugs still broken go to a human.
 {% endif %}
 
 ## When a human must decide

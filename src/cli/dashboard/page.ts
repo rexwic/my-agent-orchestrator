@@ -95,9 +95,9 @@ details summary { cursor: pointer; color: var(--dim); }
   try { showFinished = localStorage.getItem('orch-show-finished') === '1'; } catch (e) {}
 
   var STATUS = { todo: '待辦', in_progress: '進行中', review: '審查中', done: '完成', failed: '失敗', cancelled: '已取消', retrying: '重試中', waiting_decision: '等決策' };
-  var SOURCE = { escalation: '迴圈上限', agent: 'agent 提問', gate: '關卡', plan: '計畫', delivery: '交付回報', review: '審查' };
+  var SOURCE = { escalation: '迴圈上限', agent: 'agent 提問', gate: '關卡', plan: '計畫', delivery: '交付回報', review: '審查', bug: 'bug' };
   var DELIVERY = { done: '已交付', partial: '部分完成', blocked: '卡住' };
-  var KIND = { plan: '規劃', prd: 'PRD 起草', 'pm-answer': 'PM 回答', review: '審查' };
+  var KIND = { plan: '規劃', prd: 'PRD 起草', 'pm-answer': 'PM 回答', review: '審查', bug: 'bug', verify: '複測' };
 
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
   function time(iso) { if (!iso) return ''; var d = new Date(iso); return isNaN(d) ? iso : d.toLocaleString(); }

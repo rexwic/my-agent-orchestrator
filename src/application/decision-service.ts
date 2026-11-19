@@ -94,6 +94,7 @@ export class DecisionService {
       source: req.source,
       ...(req.task_id ? { task_id: req.task_id } : {}),
       ...(req.plan_id ? { plan_id: req.plan_id } : {}),
+      ...(req.bug_ids?.length ? { bug_ids: req.bug_ids } : {}),
       question: req.question,
       options: req.options,
       ...(req.context ? { context: req.context } : {}),

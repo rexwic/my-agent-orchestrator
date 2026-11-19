@@ -159,6 +159,15 @@ export class StructuredLogger {
       case 'review:submitted':
         return { ts, level: event.verdict === 'passed' ? 'info' : 'warn', event: event.type, taskId: event.taskId, round: event.round, verdict: event.verdict, blocking: event.blocking, by: event.by };
 
+      case 'bug:filed':
+        return { ts, level: 'warn', event: event.type, taskId: event.taskId, owner: event.owner, ...(event.foundBy ? { foundBy: event.foundBy } : {}), title: event.title };
+
+      case 'bug:reassigned':
+        return { ts, level: 'info', event: event.type, taskId: event.taskId, from: event.from, to: event.to, by: event.by };
+
+      case 'bug:verified':
+        return { ts, level: event.fixed ? 'info' : 'warn', event: event.type, taskId: event.taskId, fixed: event.fixed, by: event.by };
+
       case 'prd:versioned':
         return { ts, level: event.by === 'human' ? 'info' : 'warn', event: event.type, name: event.name, version: event.version, by: event.by, ...(event.note ? { note: event.note } : {}) };
 

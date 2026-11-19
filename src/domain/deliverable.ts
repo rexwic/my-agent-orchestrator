@@ -89,6 +89,6 @@ export function validateReport(report: string, sections: readonly string[]): str
 export function needsDeliveryReport(task: Task, adapter: string | undefined, required: boolean, roleRequires?: boolean): boolean {
   if (!required) return false;
   if (roleRequires === false || (roleRequires === undefined && adapter === 'shell')) return false;
-  if (task.plan_id || task.prd_draft || task.triage_decision_id || task.review_of) return false;
+  if (task.plan_id || task.prd_draft || task.triage_decision_id || task.review_of || task.verify_bugs?.length) return false;
   return !task.labels?.includes(AUTONOMOUS_LABEL);
 }

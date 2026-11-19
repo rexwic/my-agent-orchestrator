@@ -23,6 +23,7 @@ const SOURCE_LABEL: Record<Decision['source'], string> = {
   plan: 'plan',
   delivery: 'delivery',
   review: 'review',
+  bug: 'bug',
 };
 
 const collect = (value: string, previous: string[] = []): string[] => [...previous, value];

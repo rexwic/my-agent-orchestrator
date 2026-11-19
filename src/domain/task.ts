@@ -92,6 +92,10 @@ export interface Task {
   review_of?: string;
   /** Review of this task by a reviewer role (rounds, findings). */
   review?: import('./review.js').TaskReview;
+  /** A bug filed by a verifying role (owner = this task's role). */
+  bug?: import('./bug.js').BugInfo;
+  /** Re-verification task: the bugs it re-verifies (it never merges code). */
+  verify_bugs?: string[];
 }
 
 export interface CreateTaskInput {
@@ -118,4 +122,6 @@ export interface CreateTaskInput {
   prd_draft?: string;
   triage_decision_id?: string;
   review_of?: string;
+  bug?: import('./bug.js').BugInfo;
+  verify_bugs?: string[];
 }

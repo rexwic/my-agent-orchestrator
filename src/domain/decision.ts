@@ -25,7 +25,9 @@ export type DecisionSource =
   /** An agent delivered its task as partial or blocked. */
   | 'delivery'
   /** A reviewer still has open must-fix findings after the last round. */
-  | 'review';
+  | 'review'
+  /** Bugs: a second hand-off between owners, or bugs still broken after re-verification. */
+  | 'bug';
 
 /** What happens to the task once answered. */
 export type DecisionAction = 'continue' | 'approve' | 'cancel';
@@ -51,6 +53,8 @@ export interface Decision {
   task_id?: string;
   /** Plan this decision approves (source 'plan'). */
   plan_id?: string;
+  /** Bugs this decision is about (source 'bug'). */
+  bug_ids?: string[];
   question: string;
   options: string[];
   /** Background for the human (and for the agent when it continues): loop history, test output… */
@@ -68,6 +72,7 @@ export interface Decision {
 export interface DecisionRequest {
   task_id?: string;
   plan_id?: string;
+  bug_ids?: string[];
   question: string;
   options?: string[];
   context?: string;

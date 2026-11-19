@@ -93,6 +93,8 @@ export interface OrchestratorDeps {
   pmService?: import('./pm-service.js').PmService;
   /** Review by a reviewer role before merging: the gate, the reviewer's prompt, how a review task ends. */
   reviewService?: import('./review-service.js').ReviewService;
+  /** Bugs: hand-offs between owners, re-verification tasks, the verifier's prompt. */
+  bugService?: import('./bug-service.js').BugService;
   /** Prepares a directory with an `orch` launcher to put first on agents' PATH. */
   prepareAgentBin?: () => Promise<string | undefined>;
   config: OrchestratorConfig;
@@ -1303,10 +1305,11 @@ export class Orchestrator {
         ])
         : [undefined, []];
       const contracts = task.uses?.length ? await readContractFiles(workspacePath, task.uses).catch(() => []) : [];
-      const [prd, triage, review] = await Promise.all([
+      const [prd, triage, review, bugs] = await Promise.all([
         this.deps.prdService ? this.deps.prdService.promptContext(task).catch(() => undefined) : undefined,
         this.deps.pmService ? this.deps.pmService.promptContext(task).catch(() => undefined) : undefined,
         this.deps.reviewService && task.review_of ? this.deps.reviewService.promptContext(task).catch(() => undefined) : undefined,
+        this.deps.bugService ? this.deps.bugService.promptContext(task).catch(() => undefined) : undefined,
       ]);
       const context = buildPromptContext(
         task,
@@ -1314,7 +1317,7 @@ export class Orchestrator {
         attempt,
         workspacePath,
         this.deps.config,
-        { allAgents, retryContext, sharedContext, feedback: task.feedback, messages: pendingMessages.length ? pendingMessages : undefined, goal: goalContext, decisions, planning, delivery, upstream, contracts, prd, triage, review },
+        { allAgents, retryContext, sharedContext, feedback: task.feedback, messages: pendingMessages.length ? pendingMessages : undefined, goal: goalContext, decisions, planning, delivery, upstream, contracts, prd, triage, review, bugs },
       );
 
       // Render prompt(s) — split mode for caching, legacy mode for backward compat
@@ -1718,7 +1721,9 @@ export class Orchestrator {
     // Every agent ends with a delivery report: none is a failed run (retried with
     // the reason); partial / blocked waits for a human.
     const deliverables = this.deps.deliverableService;
-    if (!isPaperwork && !pendingDecision && deliverables) {
+    // An owner that handed its bug to another role (orch bug reassign) is done with it.
+    const handoff = Boolean(!isPaperwork && !pendingDecision && this.deps.bugService && task.bug?.handoff);
+    if (!isPaperwork && !pendingDecision && !handoff && deliverables) {
       const runAgent = await this.deps.agentStore.get(agentId);
       if (await deliverables.requiresReport(task, runAgent?.adapter)) {
         const delivered = await deliverables.runOutcome(task, state.running[taskId]!.started_at);
@@ -1768,7 +1773,7 @@ export class Orchestrator {
     // A planning task is finished once its plan is submitted (review → done below).
     const newStatus: import('../domain/task.js').TaskStatus = pendingDecision
       ? 'waiting_decision'
-      : isPaperwork ? 'review' : resolveCompletionStatus(task, true, autoApprove);
+      : isPaperwork || handoff ? 'review' : resolveCompletionStatus(task, true, autoApprove);
 
     // Finish run first (emits agent:completed)
     await this.deps.runService.finish(runId, 'succeeded', tokens);
@@ -1856,7 +1861,14 @@ export class Orchestrator {
     // Worktree tasks first get main merged in (IntegrationService). Git and review
     // work runs after the lock is released (see handleRunSuccess).
     let pendingReview: PendingCompletion | undefined;
-    if (isPaperwork && newStatus === 'review') {
+    if (handoff && newStatus === 'review') {
+      const fresh = await this.deps.taskStore.get(taskId);
+      if (fresh) {
+        await this.deps.bugService!.applyHandoff(fresh).catch((err: unknown) => {
+          this.deps.eventBus.emit({ type: 'orchestrator:error', error: err instanceof Error ? err.message : String(err), context: `handing bug ${taskId} to another role`, fatal: false });
+        });
+      }
+    } else if (isPaperwork && newStatus === 'review') {
       await this.finishPaperworkTask(task);
     } else if (newStatus === 'review') {
       if (isWorktree) {
@@ -2090,6 +2102,12 @@ export class Orchestrator {
         missing: 'You ended your run without submitting the review. Write review.yml and run: orch review submit review.yml',
       };
     }
+    if (task.verify_bugs?.length && this.deps.bugService) {
+      return {
+        outcome: await this.deps.bugService.verifyOutcome(task),
+        missing: `You ended your run before re-verifying every bug. For each one run: orch bug verify <bug-id> --fixed  |  --not-fixed -m "<what you saw>" (bugs: ${task.verify_bugs.join(', ')})`,
+      };
+    }
     if (task.triage_decision_id && this.deps.pmService) {
       const id = task.triage_decision_id;
       return {
@@ -2103,6 +2121,11 @@ export class Orchestrator {
   /** Paperwork handed in: done (nothing to commit or merge); a drafted PRD is planned next. */
   private async finishPaperworkTask(task: Task): Promise<void> {
     await this.finishPlanningTask(task);
+    if (task.verify_bugs?.length && this.deps.bugService) {
+      await this.deps.bugService.verifyFinished(task).catch((err: unknown) => {
+        this.deps.eventBus.emit({ type: 'orchestrator:error', error: err instanceof Error ? err.message : String(err), context: `after re-verification ${task.id}`, fatal: false });
+      });
+    }
     if (task.prd_draft && this.deps.prdService) {
       await this.deps.prdService.draftFinished(task).catch((err: unknown) => {
         this.deps.eventBus.emit({

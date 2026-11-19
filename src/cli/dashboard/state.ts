@@ -30,7 +30,7 @@ export interface DashboardRole {
   paused?: { until: string; reason: string };
 }
 
-export type TaskKind = 'work' | 'plan' | 'prd' | 'pm-answer' | 'review';
+export type TaskKind = 'work' | 'plan' | 'prd' | 'pm-answer' | 'review' | 'bug' | 'verify';
 
 export interface DashboardTask {
   id: string;
@@ -123,6 +123,8 @@ function kindOf(t: Task): TaskKind {
   if (t.prd_draft) return 'prd';
   if (t.triage_decision_id) return 'pm-answer';
   if (t.review_of) return 'review';
+  if (t.verify_bugs?.length) return 'verify';
+  if (t.bug) return 'bug';
   return 'work';
 }
 

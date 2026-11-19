@@ -29,6 +29,9 @@ export type OrchestratorEvent =
   | { type: 'decision:escalated'; decisionId: string; taskId?: string; from: string; by: string; note: string }
   | { type: 'review:requested'; taskId: string; reviewTaskId: string; round: number; reviewer: string }
   | { type: 'review:submitted'; taskId: string; round: number; verdict: 'passed' | 'changes'; blocking: string[]; by: string }
+  | { type: 'bug:filed'; taskId: string; owner: string; foundBy?: string; title: string }
+  | { type: 'bug:reassigned'; taskId: string; from: string; to: string; by: string }
+  | { type: 'bug:verified'; taskId: string; fixed: boolean; by: string }
   | { type: 'prd:versioned'; name: string; version: number; by: string; note?: string }
   | { type: 'task:delivered'; taskId: string; status: import('./deliverable.js').DeliveryStatus; by: string }
   | { type: 'plan:submitted'; planId: string; revision: number; tasks: number; decisionId: string }
