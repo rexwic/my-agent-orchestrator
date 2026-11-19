@@ -108,10 +108,11 @@ export function registerRoleCommand(program: Command, container: LightContainer)
           [r.model, r.effort].filter(Boolean).join(' / ') || dim('default'),
           `${instances.length}/${r.replicas}`,
           state,
+          dutyText(r) || dim('—'),
         ];
       });
       console.log();
-      printTable(['ROLE', 'ADAPTER', 'MODEL / EFFORT', 'AGENTS', 'STATE'], rows);
+      printTable(['ROLE', 'ADAPTER', 'MODEL / EFFORT', 'AGENTS', 'STATE', 'DUTIES'], rows);
       for (const e of errors) console.log(`\n  ${dim('invalid')} ${e.file}: ${e.message}`);
       console.log();
     });
@@ -140,6 +141,7 @@ export function registerRoleCommand(program: Command, container: LightContainer)
       ];
       if (r.task_defaults?.review_criteria?.length) pairs.push(['Review', r.task_defaults.review_criteria.join(', ')]);
       if (r.skills?.length) pairs.push(['Skills', r.skills.join(', ')]);
+      if (dutyText(r)) pairs.push(['Duties', dutyText(r)]);
       if (instances[0]) pairs.push(['Quota', describeQuotaGroup(container.quotaService.groupOf(instances[0]))]);
       printKeyValue(pairs);
 
@@ -175,6 +177,41 @@ export function registerRoleCommand(program: Command, container: LightContainer)
     });
 
   role
+    .command('init <template>')
+    .description('Add a team of roles from a template: a built-in one, ~/.orchestry/templates/<name>, or a directory of role .yml files')
+    .option('--force', 'Overwrite roles that already exist')
+    .action(async (template: string, opts: { force?: boolean }) => {
+      const { loadRoleTemplate } = await import('../../infrastructure/storage/role-templates.js');
+      const t = await loadRoleTemplate(template);
+      const r = await container.roleService.applyTemplate(t.roles, { force: Boolean(opts.force) });
+      if (container.context.json) {
+        console.log(JSON.stringify({ template: t.name, source: t.source, ...r }, null, 2));
+        return;
+      }
+      printSuccess(`Template ${t.name} (${t.source})`);
+      if (r.created.length) console.log(`  Added:       ${r.created.join(', ')}`);
+      if (r.overwritten.length) console.log(`  Overwritten: ${r.overwritten.join(', ')}`);
+      if (r.skipped.length) console.log(`  Kept (already exist; --force to overwrite): ${r.skipped.join(', ')}`);
+      printSync(r.sync);
+      console.log(dim('  See them with: orch role list   ·   edit .orchestry/roles/<name>.yml to adjust'));
+    });
+
+  role
+    .command('templates')
+    .description('List role templates (built-in and ~/.orchestry/templates)')
+    .action(async () => {
+      const { listRoleTemplates, userTemplatesDir } = await import('../../infrastructure/storage/role-templates.js');
+      const list = await listRoleTemplates();
+      if (container.context.json) {
+        console.log(JSON.stringify(list, null, 2));
+        return;
+      }
+      if (list.length) printTable(['TEMPLATE', 'ROLES', 'SOURCE', 'DESCRIPTION'], list.map((t) => [t.name, String(t.roles), t.source, t.description ?? '']));
+      else console.log('  No templates.');
+      console.log(dim(`\n  Your own: put role .yml files in ${userTemplatesDir()}/<name>/ — or pass a directory: orch role init ./my-team`));
+    });
+
+  role
     .command('sync')
     .description('Apply role files to agents now (serve/run also do this every tick)')
     .action(async () => {
@@ -183,4 +220,10 @@ export function registerRoleCommand(program: Command, container: LightContainer)
       printSuccess(changed ? 'Agents updated from roles' : 'Agents already match roles');
       printSync(sync);
     });
+}
+
+/** "review (backend, frontend) · verify (bugs → backend, frontend)" */
+function dutyText(r: import('../../domain/role.js').Role): string {
+  return (r.duties ?? []).map((d) => (d === 'review' && r.reviews?.length ? `review (${r.reviews.join(', ')})`
+    : d === 'verify' && r.bug_owners?.length ? `verify (bugs → ${r.bug_owners.join(', ')})` : d)).join(' · ');
 }

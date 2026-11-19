@@ -7,6 +7,14 @@
  * their configuration from the role on every sync — instances cannot
  * override it; to run a different model, define another role.
  *
+ * A role may declare duties — what ORCH routes to it — and whom it works
+ * with, so any team (not only software engineering) gets the same channels:
+ *   plan              breaks requirements into tasks (orch plan)
+ *   write_prd         drafts PRDs (orch prd)
+ *   answer_questions  answers other agents' questions before a human does
+ *   review            reviews the work of the roles in `reviews` before it merges
+ *   verify            verifies integrated work; files bugs for the roles in `bug_owners`
+ *
  * Stored in .orchestry/roles/<name>.yml.
  */
 
@@ -27,6 +35,9 @@ export interface RoleDeliverable {
   /** Whether this role's tasks need a report (default: yes, except shell roles). */
   required?: boolean;
 }
+
+export type RoleDuty = 'plan' | 'write_prd' | 'answer_questions' | 'review' | 'verify';
+export const ROLE_DUTIES: readonly RoleDuty[] = ['plan', 'write_prd', 'answer_questions', 'review', 'verify'];
 
 export interface Role {
   name: string;
@@ -50,6 +61,26 @@ export interface Role {
   task_defaults?: RoleTaskDefaults;
   /** What this role's delivery reports must contain (see deliverable.ts). */
   deliverable?: RoleDeliverable;
+  /** What ORCH routes to this role (see the list above). */
+  duties?: RoleDuty[];
+  /** With duty review: the roles whose tasks it reviews. */
+  reviews?: string[];
+  /** With duty verify: the roles a bug may be assigned to. */
+  bug_owners?: string[];
+}
+
+/**
+ * The role that has a duty: the first (by name) that declares it, else
+ * `fallback` (the configured name, for projects that declare no duties).
+ */
+export function dutyRole(roles: readonly Role[], duty: RoleDuty, fallback: string): string {
+  const declared = roles.filter((r) => r.duties?.includes(duty)).map((r) => r.name).sort();
+  return declared[0] ?? fallback;
+}
+
+/** Roles that declare a duty, by name. */
+export function rolesWithDuty(roles: readonly Role[], duty: RoleDuty): Role[] {
+  return roles.filter((r) => r.duties?.includes(duty)).sort((a, b) => a.name.localeCompare(b.name));
 }
 
 export type CreateRoleInput = Omit<Role, 'replicas'> & { replicas?: number };
@@ -196,6 +227,26 @@ export function validateRole(raw: unknown, expectedName?: string): Role {
     }
   }
 
+  const roleList = (key: 'reviews' | 'bug_owners'): string[] | undefined => {
+    const v = r[key];
+    if (v === undefined || v === null) return undefined;
+    if (!Array.isArray(v) || v.some((x) => typeof x !== 'string' || !ROLE_NAME_PATTERN.test(x.trim()))) {
+      errors.push(`${key} must be a list of role names`);
+      return undefined;
+    }
+    return [...new Set((v as string[]).map((x) => x.trim()))];
+  };
+  let duties: RoleDuty[] | undefined;
+  if (r['duties'] !== undefined && r['duties'] !== null) {
+    const d = r['duties'];
+    if (!Array.isArray(d) || d.some((x) => !ROLE_DUTIES.includes(x as RoleDuty))) errors.push(`duties must be a list of ${ROLE_DUTIES.join(', ')}`);
+    else duties = [...new Set(d as RoleDuty[])];
+  }
+  const reviews = roleList('reviews');
+  const bugOwners = roleList('bug_owners');
+  if (reviews?.length && !duties?.includes('review')) errors.push('reviews needs the review duty');
+  if (bugOwners?.length && !duties?.includes('verify')) errors.push('bug_owners needs the verify duty');
+
   const role: Role = {
     name: name ?? '',
     adapter: adapter ?? '',
@@ -217,6 +268,9 @@ export function validateRole(raw: unknown, expectedName?: string): Role {
   if (command) role.command = command;
   if (taskDefaults && Object.keys(taskDefaults).length) role.task_defaults = taskDefaults;
   if (deliverable && Object.keys(deliverable).length) role.deliverable = deliverable;
+  if (duties?.length) role.duties = duties;
+  if (reviews?.length) role.reviews = reviews;
+  if (bugOwners?.length) role.bug_owners = bugOwners;
 
   if (errors.length) {
     throw new InvalidArgumentsError(`Invalid role${name ? ` "${name}"` : ''}: ${errors.join('; ')}`);

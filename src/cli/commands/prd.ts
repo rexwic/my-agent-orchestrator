@@ -58,7 +58,7 @@ export function registerPrdCommand(program: Command, container: LightContainer):
         console.log(JSON.stringify({ name, task }, null, 2));
         return;
       }
-      printSuccess(`The ${container.prdService.pmRole} role drafts PRD "${name}" (task ${task.id})`);
+      printSuccess(`The ${task.role} role drafts PRD "${name}" (task ${task.id})`);
       console.log(dim('  Start agents if none are running: orch run --watch / orch tui'));
       console.log(dim('  When the PM hands it in, a planner plans it; approve the PRD and the plan together with orch plan approve.'));
     });

@@ -33,6 +33,7 @@ import {
   type PlanValidation,
 } from '../domain/plan.js';
 import type { OrchestratorConfig } from '../domain/config.js';
+import { dutyRole } from '../domain/role.js';
 import type { Task } from '../domain/task.js';
 import { isTerminal } from '../domain/transitions.js';
 import type { IPlanStore, IRoleStore, ITaskStore } from '../infrastructure/storage/interfaces.js';
@@ -88,6 +89,12 @@ export class PlanService {
     deps.decisionService.onAnswer((d) => this.onDecisionAnswered(d));
   }
 
+  /** The role that plans: one declaring the plan duty, else config planner.role, else "planner". */
+  async plannerRole(): Promise<string> {
+    const roles = await this.deps.roleStore.list().catch(() => []);
+    return dutyRole(roles, 'plan', this.deps.config.planner?.role || DEFAULT_PLANNER_ROLE);
+  }
+
   get maxTasks(): number {
     return this.deps.config.planner?.max_tasks ?? DEFAULT_MAX_PLAN_TASKS;
   }
@@ -95,7 +102,7 @@ export class PlanService {
   async start(input: StartPlanInput): Promise<{ plan: Plan; task: Task }> {
     const requirement = input.requirement.trim();
     if (!requirement) throw new InvalidArgumentsError('Describe the requirement to plan');
-    const role = input.role?.trim() || this.deps.config.planner?.role || DEFAULT_PLANNER_ROLE;
+    const role = input.role?.trim() || await this.plannerRole();
     if (!(await this.deps.roleStore.get(role).catch(() => null))) {
       throw new InvalidArgumentsError(`There is no "${role}" role to do the planning`, PLANNER_ROLE_HINT);
     }
@@ -137,7 +144,7 @@ export class PlanService {
   /** Validate a plan without submitting it. */
   async validate(raw: unknown, plan?: Plan): Promise<PlanValidation> {
     const [roles, tasks] = await Promise.all([this.deps.roleStore.load(), this.deps.taskStore.list()]);
-    const planner = plan?.role ?? this.deps.config.planner?.role ?? DEFAULT_PLANNER_ROLE;
+    const planner = plan?.role ?? dutyRole(roles.roles, 'plan', this.deps.config.planner?.role || DEFAULT_PLANNER_ROLE);
     return validatePlanDraft(raw, {
       roles: roles.roles.map((r) => r.name).filter((n) => n !== planner),
       existingTaskIds: new Set(tasks.map((t) => t.id)),

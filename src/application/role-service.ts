@@ -73,6 +73,48 @@ export class RoleService {
     return this.sync();
   }
 
+  /**
+   * Apply a role template: validate every role (and that `reviews` /
+   * `bug_owners` name roles of the template or of the project), then save the
+   * new ones; existing roles are kept unless `force`. All or nothing.
+   */
+  async applyTemplate(
+    raw: Array<{ file: string; data: unknown }>,
+    opts: { force?: boolean } = {},
+  ): Promise<{ created: string[]; overwritten: string[]; skipped: string[]; sync: RoleSyncResult }> {
+    const errors: string[] = [];
+    const roles: Role[] = [];
+    for (const { file, data } of raw) {
+      try {
+        roles.push(validateRole(data));
+      } catch (err) {
+        errors.push(`${file}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    const dup = roles.map((r) => r.name).filter((n, i, all) => all.indexOf(n) !== i);
+    if (dup.length) errors.push(`Defined twice: ${[...new Set(dup)].join(', ')}`);
+
+    const existing = (await this.roleStore.list()).map((r) => r.name);
+    const known = new Set([...existing, ...roles.map((r) => r.name)]);
+    for (const r of roles) {
+      for (const [field, names] of [['reviews', r.reviews], ['bug_owners', r.bug_owners]] as const) {
+        for (const n of names ?? []) if (!known.has(n)) errors.push(`${r.name}: ${field} names "${n}", which is neither in the template nor an existing role`);
+      }
+    }
+    if (errors.length) {
+      throw new InvalidArgumentsError(`The template has ${errors.length} problem(s):\n  - ${errors.join('\n  - ')}`);
+    }
+
+    const result = { created: [] as string[], overwritten: [] as string[], skipped: [] as string[] };
+    for (const role of roles) {
+      const exists = existing.includes(role.name);
+      if (exists && !opts.force) { result.skipped.push(role.name); continue; }
+      await this.roleStore.save(role);
+      (exists ? result.overwritten : result.created).push(role.name);
+    }
+    return { ...result, sync: await this.sync() };
+  }
+
   /** Instances of a role (agents with role_id === name). */
   async instances(name: string): Promise<Agent[]> {
     return (await this.agentStore.list()).filter((a) => a.role_id === name);

@@ -19,6 +19,7 @@ import {
   validatePrdName,
   type PrdVersion,
 } from '../domain/prd.js';
+import { dutyRole } from '../domain/role.js';
 import type { Task } from '../domain/task.js';
 import type { IPrdStore, IRoleStore } from '../infrastructure/storage/interfaces.js';
 import type { EventBus } from './event-bus.js';
@@ -70,12 +71,14 @@ export interface PrdPromptContext {
 export class PrdService {
   constructor(private readonly deps: PrdServiceDeps) {}
 
-  get pmRole(): string {
-    return this.deps.config.pm?.role || DEFAULT_PM_ROLE;
+  /** The role that drafts PRDs: one declaring write_prd, else config pm.role, else "pm". */
+  async prdRole(): Promise<string> {
+    const roles = await this.deps.roleStore.list().catch(() => []);
+    return dutyRole(roles, 'write_prd', this.deps.config.pm?.role || DEFAULT_PM_ROLE);
   }
 
   async hasPmRole(): Promise<boolean> {
-    return Boolean(await this.deps.roleStore.get(this.pmRole).catch(() => null));
+    return Boolean(await this.deps.roleStore.get(await this.prdRole()).catch(() => null));
   }
 
   async add(input: AddPrdInput): Promise<PrdVersion> {
@@ -194,14 +197,15 @@ export class PrdService {
   async startDraft(input: { requirement: string; name?: string; title?: string }): Promise<{ name: string; task: Task }> {
     const requirement = input.requirement.trim();
     if (!requirement) throw new InvalidArgumentsError('Describe the requirement for the PRD');
-    if (!(await this.hasPmRole())) throw new InvalidArgumentsError(`There is no "${this.pmRole}" role to write the PRD`, PM_ROLE_HINT);
+    const pmRole = await this.prdRole();
+    if (!(await this.hasPmRole())) throw new InvalidArgumentsError(`There is no "${pmRole}" role to write the PRD`, PM_ROLE_HINT);
     const name = input.name ? validatePrdName(input.name) : prdNameFrom(requirement, suffix());
     const latest = await this.latest(name);
     const title = input.title?.trim() || requirement.split(/\r?\n/).map((l) => l.trim()).find(Boolean)!.slice(0, 60);
     const task = await this.deps.taskService.create({
       title: `PRD: ${title}${latest ? ` (v${latest.version + 1})` : ''}`,
       description: requirement,
-      role: this.pmRole,
+      role: pmRole,
       labels: [PRD_DRAFT_LABEL],
       review_criteria: [],
       prd_draft: name,
@@ -224,7 +228,7 @@ export class PrdService {
     if (!task.prd_draft || !this.deps.planService) return undefined;
     const latest = await this.latest(task.prd_draft);
     if (!latest) return undefined;
-    const plannerRole = this.deps.config.planner?.role || 'planner';
+    const plannerRole = dutyRole(await this.deps.roleStore.list().catch(() => []), 'plan', this.deps.config.planner?.role || 'planner');
     if (!(await this.deps.roleStore.get(plannerRole).catch(() => null))) return undefined;
     const { plan } = await this.deps.planService.start({
       requirement: latest.content,

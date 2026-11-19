@@ -13,6 +13,7 @@
 import type { OrchestratorConfig } from '../domain/config.js';
 import type { Decision } from '../domain/decision.js';
 import { DEFAULT_PM_ROLE, PM_ANSWER_LABEL } from '../domain/prd.js';
+import { dutyRole } from '../domain/role.js';
 import type { Task } from '../domain/task.js';
 import type { IRoleStore, ITaskStore } from '../infrastructure/storage/interfaces.js';
 import type { DecisionService } from './decision-service.js';
@@ -52,15 +53,18 @@ export class PmService {
     });
   }
 
-  get role(): string {
-    return this.deps.config.pm?.role || DEFAULT_PM_ROLE;
+  /** The role that answers questions first: one declaring answer_questions, else config pm.role, else "pm". */
+  async role(): Promise<string> {
+    const roles = await this.deps.roleStore.list().catch(() => []);
+    return dutyRole(roles, 'answer_questions', this.deps.config.pm?.role || DEFAULT_PM_ROLE);
   }
 
   /** Assign an agent's question to the PM (creating its task), or leave it to a human. */
   async route(decision: Decision, asker: Task | null): Promise<{ assignee: string; triage_task_id: string } | undefined> {
     if (decision.source !== 'agent' || !asker) return undefined;
-    if (asker.role === this.role || asker.triage_decision_id) return undefined;
-    if (!(await this.deps.roleStore.get(this.role).catch(() => null))) return undefined;
+    const role = await this.role();
+    if (asker.role === role || asker.triage_decision_id) return undefined;
+    if (!(await this.deps.roleStore.get(role).catch(() => null))) return undefined;
 
     const flat = decision.question.replace(/\s+/g, ' ').trim();
     const desc = asker.description.length > MAX_ASKER_DESCRIPTION ? `${asker.description.slice(0, MAX_ASKER_DESCRIPTION)}…` : asker.description;
@@ -75,21 +79,21 @@ export class PmService {
         '',
         `The task they work on:\n${desc}`,
       ].join('\n'),
-      role: this.role,
+      role,
       priority: 1,
       labels: [PM_ANSWER_LABEL],
       review_criteria: [],
       triage_decision_id: decision.id,
       ...(asker.prd ? { prd: asker.prd } : {}),
     });
-    return { assignee: this.role, triage_task_id: task.id };
+    return { assignee: role, triage_task_id: task.id };
   }
 
   /** A PM task's run is done once the question is answered or escalated. */
   async triageOutcome(task: Task): Promise<'submitted' | 'missing'> {
     if (!task.triage_decision_id) return 'missing';
     const d = await this.deps.decisionService.get(task.triage_decision_id).catch(() => null);
-    return !d || d.status === 'answered' || d.assignee !== this.role ? 'submitted' : 'missing';
+    return !d || d.status === 'answered' || d.assignee !== task.role ? 'submitted' : 'missing';
   }
 
   async promptContext(task: Task): Promise<TriagePromptContext | undefined> {
@@ -111,7 +115,7 @@ export class PmService {
     const task = await this.deps.taskStore.get(taskId);
     if (!task?.triage_decision_id) return;
     const d = await this.deps.decisionService.get(task.triage_decision_id).catch(() => null);
-    if (!d || d.status !== 'pending' || d.assignee !== this.role) return;
+    if (!d || d.status !== 'pending' || d.assignee !== task.role) return;
     await this.deps.decisionService.escalate(d.id, {
       by: 'orch',
       note: `The PM task ${taskId} ended (${status}) without an answer.`,
