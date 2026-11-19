@@ -246,3 +246,37 @@ function patternsOverlap(a: string, b: string): boolean {
 
   return false;
 }
+
+/** `\` → `/`, leading `./` removed. */
+export function normalizeRelativePath(p: string): string {
+  return p.trim().replace(/\\/g, '/').replace(/^(\.\/)+/, '');
+}
+
+/** True if `p` (already normalized) is relative to the project root and stays inside it. */
+export function isProjectRelativePath(p: string): boolean {
+  return Boolean(p) && !p.startsWith('/') && !/^[A-Za-z]:/.test(p) && !p.split('/').includes('..');
+}
+
+export const hasGlob = (p: string): boolean => /[*?[\]{}]/.test(p);
+
+/**
+ * Whether `file` matches `pattern`: `**` spans directories, `*` and `?` stay
+ * within one; a pattern without wildcards matches that file or anything under
+ * that directory. Both are normalized first (Windows separators).
+ */
+export function matchesPattern(file: string, pattern: string): boolean {
+  const f = normalizeRelativePath(file);
+  const p = normalizeRelativePath(pattern).replace(/\/+$/, '');
+  if (!hasGlob(p)) return f === p || f.startsWith(`${p}/`);
+  let re = '';
+  for (let i = 0; i < p.length; i++) {
+    const c = p[i]!;
+    if (c === '*' && p[i + 1] === '*') {
+      i++;
+      if (p[i + 1] === '/') { i++; re += '(?:.*/)?'; } else re += '.*';
+    } else if (c === '*') re += '[^/]*';
+    else if (c === '?') re += '[^/]';
+    else re += c.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+  }
+  return new RegExp(`^${re}$`).test(f);
+}

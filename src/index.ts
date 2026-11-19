@@ -42,6 +42,12 @@ export type { PlanServiceDeps, StartPlanInput, SubmitPlanInput, PlanningPromptCo
 export { PlanStore, MemoryPlanStore } from './infrastructure/storage/plan-store.js';
 export { validatePlanDraft, planTaskOrder, DEFAULT_MAX_PLAN_TASKS } from './domain/plan.js';
 export type { Plan, PlanDraft, PlanTask, PlanStatus, PlanValidation, PlanValidationContext } from './domain/plan.js';
+export { DeliverableService, MAX_UPSTREAM_REPORT } from './application/deliverable-service.js';
+export type { DeliverableServiceDeps, SubmitDeliverableInput, DeliveryContract } from './application/deliverable-service.js';
+export { DeliverableStore, MemoryDeliverableStore } from './infrastructure/storage/deliverable-store.js';
+export { validateReport, needsDeliveryReport, parseDeliveryStatus, DEFAULT_REPORT_SECTIONS, DELIVERY_STATUSES } from './domain/deliverable.js';
+export type { Deliverable, DeliveryStatus } from './domain/deliverable.js';
+export { matchesPattern } from './domain/scope.js';
 export type { Decision, DecisionAction, DecisionScope, DecisionSource, DecisionRequest, DecisionAnswerInput } from './domain/decision.js';
 export { QuotaStore, MemoryQuotaStore } from './infrastructure/storage/quota-store.js';
 export type { QuotaPause, QuotaState } from './domain/quota.js';

@@ -152,6 +152,9 @@ export class StructuredLogger {
           ...(event.taskId ? { taskId: event.taskId } : {}), action: event.action, scope: event.scope,
         };
 
+      case 'task:delivered':
+        return { ts, level: event.status === 'done' ? 'info' : 'warn', event: event.type, taskId: event.taskId, status: event.status, by: event.by };
+
       case 'task:approved':
         return { ts, level: 'info', event: event.type, taskId: event.taskId };
 

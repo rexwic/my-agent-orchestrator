@@ -10,6 +10,7 @@ import path from 'node:path';
 import { nanoid } from 'nanoid';
 import type { Task, CreateTaskInput, TaskStatus } from '../domain/task.js';
 import { canTransition, isTerminal } from '../domain/transitions.js';
+import { hasGlob, isProjectRelativePath, normalizeRelativePath } from '../domain/scope.js';
 import {
   TaskNotFoundError,
   InvalidTransitionError,
@@ -63,6 +64,9 @@ export class TaskService {
       }
     }
 
+    const produces = taskPaths(input.produces, 'produces', true);
+    const uses = taskPaths(input.uses, 'uses', false);
+
     const assignee = await this.resolveAssignee(input.assignee);
 
     const now = new Date().toISOString();
@@ -86,6 +90,11 @@ export class TaskService {
       scope: input.scope,
       goalId: input.goalId,
       ...(input.plan_id ? { plan_id: input.plan_id } : {}),
+      ...(produces.length ? { produces } : {}),
+      ...(uses.length ? { uses } : {}),
+      ...(input.prd ? { prd: input.prd } : {}),
+      ...(input.prd_draft ? { prd_draft: input.prd_draft } : {}),
+      ...(input.triage_decision_id ? { triage_decision_id: input.triage_decision_id } : {}),
     };
 
     if (input.attachments?.length && this.paths) {
@@ -312,4 +321,14 @@ export class TaskService {
       `Unknown agent: "${assignee}". Use an agent ID (agt_xxx) or an exact agent name.`,
     );
   }
+}
+
+/** Validate and normalize `produces` (globs allowed) / `uses` (files) paths. */
+function taskPaths(list: string[] | undefined, field: 'produces' | 'uses', globs: boolean): string[] {
+  const out = [...new Set((list ?? []).map(normalizeRelativePath).filter(Boolean))];
+  for (const p of out) {
+    if (!isProjectRelativePath(p)) throw new InvalidArgumentsError(`${field}: "${p}" must be a path relative to the project root`);
+    if (!globs && hasGlob(p)) throw new InvalidArgumentsError(`uses: "${p}" must be a file path, not a pattern`);
+  }
+  return out;
 }

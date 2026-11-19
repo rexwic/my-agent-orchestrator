@@ -44,7 +44,8 @@ import { QuotaService } from './quota-service.js';
 import { Semaphore } from './semaphore.js';
 import type { RoleService } from './role-service.js';
 import type { DecisionService } from './decision-service.js';
-import { describeAnswer } from '../domain/decision.js';
+import { describeAnswer, MAX_CONTEXT_LENGTH } from '../domain/decision.js';
+import type { DeliverableService } from './deliverable-service.js';
 import { prependPath } from '../infrastructure/process/cli-shim.js';
 import { MemoryQuotaStore } from '../infrastructure/storage/quota-store.js';
 import type { IQuotaStore } from '../infrastructure/storage/interfaces.js';
@@ -83,6 +84,8 @@ export interface OrchestratorDeps {
   decisionService?: DecisionService;
   /** Plans: planner prompts, and how a planning task's run ends. */
   planService?: import('./plan-service.js').PlanService;
+  /** Delivery reports: required at the end of a run, shown to dependent tasks. */
+  deliverableService?: DeliverableService;
   /** Prepares a directory with an `orch` launcher to put first on agents' PATH. */
   prepareAgentBin?: () => Promise<string | undefined>;
   config: OrchestratorConfig;
@@ -1253,13 +1256,20 @@ export class Orchestrator {
       const planning = task.plan_id && this.deps.planService
         ? await this.deps.planService.promptContext(task).catch(() => undefined)
         : undefined;
+      const deliverables = this.deps.deliverableService;
+      const [delivery, upstream] = deliverables
+        ? await Promise.all([
+          deliverables.requiresReport(task, agent.adapter) ? deliverables.contractFor(task).catch(() => undefined) : undefined,
+          task.depends_on.length ? deliverables.upstreamFor(task).catch(() => []) : [],
+        ])
+        : [undefined, []];
       const context = buildPromptContext(
         task,
         agent,
         attempt,
         workspacePath,
         this.deps.config,
-        { allAgents, retryContext, sharedContext, feedback: task.feedback, messages: pendingMessages.length ? pendingMessages : undefined, goal: goalContext, decisions, planning },
+        { allAgents, retryContext, sharedContext, feedback: task.feedback, messages: pendingMessages.length ? pendingMessages : undefined, goal: goalContext, decisions, planning, delivery, upstream },
       );
 
       // Render prompt(s) — split mode for caching, legacy mode for backward compat
@@ -1653,7 +1663,7 @@ export class Orchestrator {
     if (!task) return;
 
     // A planner that ended without submitting its plan failed (it is retried).
-    const pendingDecision = await this.hasPendingDecision(taskId);
+    let pendingDecision = await this.hasPendingDecision(taskId);
     const isPlanning = Boolean(task.plan_id && this.deps.planService);
     if (isPlanning && !pendingDecision && await this.deps.planService!.planningRunOutcome(task) === 'missing') {
       return this._handleRunFailure(
@@ -1661,6 +1671,33 @@ export class Orchestrator {
         state.running[taskId]!,
         'The planner ended its run without submitting a plan. Write the plan file and run: orch plan submit <file>',
       ).then(() => undefined);
+    }
+
+    // Every agent ends with a delivery report: none is a failed run (retried with
+    // the reason); partial / blocked waits for a human.
+    const deliverables = this.deps.deliverableService;
+    if (!isPlanning && !pendingDecision && deliverables) {
+      const runAgent = await this.deps.agentStore.get(agentId);
+      if (deliverables.requiresReport(task, runAgent?.adapter)) {
+        const delivered = await deliverables.runOutcome(task, state.running[taskId]!.started_at);
+        if (delivered === 'missing') {
+          return this._handleRunFailure(
+            taskId,
+            state.running[taskId]!,
+            'You ended your run without a delivery report. Write the report (Markdown, with the sections listed in the task prompt) and run: orch task deliver report.md --status done|partial|blocked',
+          ).then(() => undefined);
+        }
+        if (delivered.status !== 'done' && this.deps.decisionService) {
+          await this.deps.decisionService.request({
+            task_id: taskId,
+            source: 'delivery',
+            question: `"${task.title}" was delivered as ${delivered.status}. How should we go on? (continue with instructions, approve to merge it as it is, or cancel)`,
+            context: delivered.report.slice(0, MAX_CONTEXT_LENGTH),
+            requested_by: delivered.submitted_by,
+          });
+          pendingDecision = true;
+        }
+      }
     }
 
     // Worktree tasks are committed, synced with main and reviewed by the

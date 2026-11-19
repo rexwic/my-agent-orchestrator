@@ -225,6 +225,12 @@ export function registerTaskCommand(program: Command, container: LightContainer)
         }
       }
 
+      const delivered = await container.deliverableService.get(t.id).catch(() => null);
+      if (delivered) {
+        console.log(`\n  Delivery report · ${delivered.status === 'done' ? 'done' : amber(delivered.status)} · ${delivered.submitted_by} · ${delivered.submitted_at}\n  ${'─'.repeat(42)}`);
+        for (const line of delivered.report.split('\n')) console.log(`  ${line}`);
+      }
+
       if (t.review_results?.length) {
         console.log(`\n  Review Results\n  ${'─'.repeat(42)}`);
         for (const r of t.review_results) {
@@ -359,4 +365,71 @@ export function registerTaskCommand(program: Command, container: LightContainer)
       await container.taskService.retry(id);
       printSuccess(`Reset ${id} to todo`);
     });
+
+  // task deliver
+  task
+    .command('deliver [file]')
+    .description('Hand in the delivery report of your task (agents: do this before ending your run). "-" reads stdin')
+    .requiredOption('-s, --status <status>', 'done | partial | blocked')
+    .option('--task <id>', 'Task (default: $ORCH_TASK_ID)')
+    .action(async (file: string | undefined, opts) => {
+      const { parseDeliveryStatus } = await import('../../domain/deliverable.js');
+      const { InvalidArgumentsError } = await import('../../domain/errors.js');
+      const taskId: string | undefined = opts.task ?? process.env.ORCH_TASK_ID;
+      if (!taskId) throw new InvalidArgumentsError('Which task? Pass --task <id> (agents run with $ORCH_TASK_ID set)');
+      const status = parseDeliveryStatus(opts.status);
+      const source = file ?? 'report.md';
+      const fs = await import('node:fs/promises');
+      const path = await import('node:path');
+      let report: string;
+      if (source === '-') {
+        report = await readStdin();
+      } else {
+        try {
+          report = await fs.readFile(source, 'utf8');
+        } catch {
+          throw new InvalidArgumentsError(`Report file not found: ${source}`, 'Write the report (Markdown) to that file first, or pass "-" to read it from stdin');
+        }
+      }
+      const cwd = process.cwd();
+      const files = await gitFiles(cwd, ['--cached', '--others', '--exclude-standard']);
+      const agent = process.env.ORCH_AGENT_NAME;
+      const d = await container.deliverableService.submit({
+        taskId, report, status, submittedBy: agent ?? 'human', ...(files ? { files } : {}),
+      });
+
+      // The report lives in ORCH, not in the project: remove an untracked report file so it is not committed.
+      let removed = false;
+      if (source !== '-') {
+        const abs = path.resolve(source);
+        const rel = path.relative(cwd, abs).replace(/\\/g, '/');
+        const tracked = await gitFiles(cwd, ['--cached']);
+        if (!rel.startsWith('..') && !path.isAbsolute(rel) && tracked && !tracked.includes(rel)) {
+          removed = await fs.rm(abs).then(() => true, () => false);
+        }
+      }
+
+      if (container.context.json) {
+        console.log(JSON.stringify(d, null, 2));
+        return;
+      }
+      printSuccess(`Delivered ${taskId} (${status})${removed ? ` — ${source} removed from the workspace (the report is kept by ORCH)` : ''}`);
+      if (agent) console.log(status === 'done' ? '  Now end your run with a short summary.' : '  A human decides how to go on. End your run now with a short summary.');
+    });
+}
+
+async function readStdin(): Promise<string> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of process.stdin) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
+  return Buffer.concat(chunks).toString('utf8');
+}
+
+/** `git ls-files -z <args>` in `cwd` ('/'-separated paths), or undefined outside a git repository. */
+async function gitFiles(cwd: string, args: string[]): Promise<string[] | undefined> {
+  const { execFile } = await import('node:child_process');
+  return new Promise((resolve) => {
+    execFile('git', ['ls-files', '-z', ...args], { cwd, maxBuffer: 64 * 1024 * 1024 }, (err, stdout) => {
+      resolve(err ? undefined : stdout.split('\0').filter(Boolean));
+    });
+  });
 }

@@ -69,6 +69,16 @@ export interface PlannerConfig {
   max_tasks?: number;
 }
 
+export interface DeliverablesConfig {
+  /** Agents must end every task with a delivery report (`orch task deliver`). Default true. */
+  required?: boolean;
+}
+
+export interface PmConfig {
+  /** Role that drafts PRDs and answers agents' questions before a human does (default "pm"). */
+  role?: string;
+}
+
 export interface OrchestratorConfig {
   project: ProjectConfig;
   defaults: {
@@ -80,6 +90,10 @@ export interface OrchestratorConfig {
   review?: ReviewConfig;
   /** `orch plan`: planner role and plan size limit. */
   planner?: PlannerConfig;
+  /** Delivery reports. */
+  deliverables?: DeliverablesConfig;
+  /** PM role: PRD drafts and first answers to agents' questions. */
+  pm?: PmConfig;
   prompt?: {
     template?: string;
     system_template?: string;
@@ -120,5 +134,11 @@ export const DEFAULT_CONFIG: OrchestratorConfig = {
   planner: {
     role: 'planner',
     max_tasks: 30,
+  },
+  deliverables: {
+    required: true,
+  },
+  pm: {
+    role: 'pm',
   },
 };

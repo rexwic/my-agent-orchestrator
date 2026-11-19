@@ -21,6 +21,7 @@ const SOURCE_LABEL: Record<Decision['source'], string> = {
   agent: 'agent asked',
   gate: 'gate',
   plan: 'plan',
+  delivery: 'delivery',
 };
 
 const collect = (value: string, previous: string[] = []): string[] => [...previous, value];

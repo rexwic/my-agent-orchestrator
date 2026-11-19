@@ -71,6 +71,10 @@ export interface PromptContext {
     roles: Array<{ name: string; description?: string; agents: number }>;
     previous_plan?: string;
   };
+  /** The delivery report this run must end with. */
+  delivery?: { sections: string[]; produces: string[] };
+  /** Reports of the tasks this one depends on. */
+  upstream?: Array<{ task_id: string; title: string; status: string; report: string }>;
   shared_context?: Record<string, string>;
   messages?: Array<{
     id: string;
@@ -253,6 +257,8 @@ export interface BuildPromptOptions {
   goal?: GoalContext;
   decisions?: PromptContext['decisions'];
   planning?: PromptContext['planning'];
+  delivery?: PromptContext['delivery'];
+  upstream?: PromptContext['upstream'];
 }
 
 export function buildPromptContext(
@@ -263,7 +269,7 @@ export function buildPromptContext(
   config: OrchestratorConfig,
   options?: BuildPromptOptions,
 ): PromptContext {
-  const { allAgents, retryContext, sharedContext, feedback, messages: rawMessages, goal, decisions, planning } = options ?? {};
+  const { allAgents, retryContext, sharedContext, feedback, messages: rawMessages, goal, decisions, planning, delivery, upstream } = options ?? {};
 
   // Map messages to prompt-friendly shape
   const agentById = new Map((allAgents ?? []).map((a) => [a.id, a]));
@@ -310,6 +316,8 @@ export function buildPromptContext(
     feedback,
     decisions: decisions?.length ? decisions : undefined,
     planning,
+    delivery,
+    upstream: upstream?.length ? upstream : undefined,
     shared_context: sharedContext && Object.keys(sharedContext).length > 0
       ? filterRelevantContext(sharedContext, {
           agentName: agent.name,
@@ -413,6 +421,15 @@ This task was sent back or paused earlier (by a review, ORCH, or a human decisio
 **Important:** Address the feedback above. Your earlier work is still in the workspace — build on it; do NOT redo work that was already accepted.
 {% endif %}
 
+{% if upstream %}
+## What your dependencies delivered
+The tasks this one depends on are done. Their delivery reports:
+{% for u in upstream %}
+### {{ u.title }} ({{ u.status }})
+{{ u.report }}
+{% endfor %}
+{% endif %}
+
 {% if decisions %}
 ## Decisions (binding)
 A human made these decisions. Follow them and do not reopen them:
@@ -472,6 +489,20 @@ The human's feedback is under Review Feedback above.
 If the requirements are ambiguous or contradict each other, or the choice is a product or architecture decision that is not yours to make, do not guess. Ask, then stop:
 \`orch decision request "<question>" --option "<choice A>" --option "<choice B>"\`
 (it applies to this task, {{ task.id }}). Then end your run with a short summary of what you did so far — you will be resumed with the answer.
+{% if delivery %}
+## Before you finish: delivery report
+ORCH moves this task on only after you hand in a report. Write it in Markdown with these sections (\`## <name>\` headings, none of them empty):
+{% for s in delivery.sections %}- \`## {{ s }}\`
+{% endfor %}{% if delivery.produces.size > 0 %}
+This task must produce: {% for p in delivery.produces %}\`{{ p }}\`{% unless forloop.last %}, {% endunless %}{% endfor %}. A \`done\` report is rejected while no file matches.
+{% endif %}
+Then run, from your working directory: \`orch task deliver report.md --status <status>\`
+- \`done\`: everything the task asks for is done and you verified it.
+- \`partial\`: part of it is done; the report says what is missing and why.
+- \`blocked\`: you could not do it (missing information, a broken environment…); the report says what you need.
+
+Be honest: a human reads partial and blocked reports and decides how to go on, and a false \`done\` is caught by review and sent back. If the command lists problems, fix the report and run it again. Then end your run.
+{% endif %}
 
 {% if shared_context %}
 ## Shared Context

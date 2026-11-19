@@ -588,6 +588,31 @@ describe('system/user template split', () => {
     expect(rendered).not.toContain('Your job: plan');
   });
 
+  it('user template asks for a delivery report with the required sections and files', async () => {
+    const ctx = buildPromptContext(makeTask(), makeAgent(), 1, '/workspace', DEFAULT_CONFIG, {
+      delivery: { sections: ['Summary', '證據'], produces: ['docs/api/discount.yaml', 'src/fe/**'] },
+    });
+    const rendered = await engine.render(DEFAULT_USER_TEMPLATE, ctx);
+    expect(rendered).toContain('## Before you finish: delivery report');
+    expect(rendered).toMatch(/- `## Summary`\r?\n- `## 證據`/);
+    expect(rendered).toContain('This task must produce: `docs/api/discount.yaml`, `src/fe/**`.');
+    expect(rendered).toContain('orch task deliver report.md --status <status>');
+  });
+
+  it('user template shows what dependencies delivered; no delivery sections without them', async () => {
+    const ctx = buildPromptContext(makeTask(), makeAgent(), 1, '/workspace', DEFAULT_CONFIG, {
+      upstream: [{ task_id: 'tsk_up', title: 'API contract', status: 'done', report: '#### Summary\nWrote docs/api/discount.yaml' }],
+    });
+    const rendered = await engine.render(DEFAULT_USER_TEMPLATE, ctx);
+    expect(rendered).toContain('## What your dependencies delivered');
+    expect(rendered).toContain('### API contract (done)');
+    expect(rendered).toContain('Wrote docs/api/discount.yaml');
+    expect(rendered).not.toContain('Before you finish');
+
+    const plain = await engine.render(DEFAULT_USER_TEMPLATE, buildPromptContext(makeTask(), makeAgent(), 1, '/workspace', DEFAULT_CONFIG));
+    expect(plain).not.toContain('What your dependencies delivered');
+  });
+
   it('user template has no decisions section when there are none', async () => {
     const rendered = await engine.render(DEFAULT_USER_TEMPLATE, buildPromptContext(makeTask(), makeAgent(), 1, '/workspace', DEFAULT_CONFIG));
     expect(rendered).not.toContain('## Decisions (binding)');

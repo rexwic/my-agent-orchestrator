@@ -77,6 +77,12 @@ export interface IPlanStore {
   list(): Promise<import('../../domain/plan.js').Plan[]>;
 }
 
+export interface IDeliverableStore {
+  /** Replaces the task's previous report. */
+  save(deliverable: import('../../domain/deliverable.js').Deliverable): Promise<void>;
+  get(taskId: string): Promise<import('../../domain/deliverable.js').Deliverable | null>;
+}
+
 export interface IQuotaStore {
   read(): Promise<import('../../domain/quota.js').QuotaState>;
   write(state: import('../../domain/quota.js').QuotaState): Promise<void>;

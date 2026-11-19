@@ -118,6 +118,14 @@ export class Paths {
     return path.join(this.plansDir, `${sanitizeId(id)}.yml`);
   }
 
+  get deliverablesDir(): string {
+    return path.join(this.root, 'deliverables');
+  }
+
+  deliverablePath(taskId: string): string {
+    return path.join(this.deliverablesDir, `${sanitizeId(taskId)}.md`);
+  }
+
   /** Launchers for the orch CLI, put on agents' PATH. */
   get binDir(): string {
     return path.join(this.root, 'bin');

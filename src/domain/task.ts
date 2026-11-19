@@ -73,6 +73,16 @@ export interface Task {
   attachments?: string[];
   /** Planning task of this plan (the planner submits the plan; it never merges code). */
   plan_id?: string;
+  /** Files this task must produce (paths or globs, relative to the project root). */
+  produces?: string[];
+  /** Contract files this task must follow and must not change (paths). */
+  uses?: string[];
+  /** PRD this task implements (its latest version goes into the prompt). */
+  prd?: string;
+  /** Drafting task of this PRD (the PM submits it; it never merges code). */
+  prd_draft?: string;
+  /** PM task answering this decision (it answers or escalates; it never merges code). */
+  triage_decision_id?: string;
 }
 
 export interface CreateTaskInput {
@@ -93,4 +103,9 @@ export interface CreateTaskInput {
   needs_decision?: boolean;
   /** Makes it the planning task of this plan. */
   plan_id?: string;
+  produces?: string[];
+  uses?: string[];
+  prd?: string;
+  prd_draft?: string;
+  triage_decision_id?: string;
 }

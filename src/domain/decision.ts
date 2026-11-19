@@ -21,7 +21,9 @@ export type DecisionSource =
   /** The task was created with `--needs-decision`. */
   | 'gate'
   /** A planner submitted a plan: approve it, send it back with feedback, or cancel it. */
-  | 'plan';
+  | 'plan'
+  /** An agent delivered its task as partial or blocked. */
+  | 'delivery';
 
 /** What happens to the task once answered. */
 export type DecisionAction = 'continue' | 'approve' | 'cancel';
