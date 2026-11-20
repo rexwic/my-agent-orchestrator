@@ -4,9 +4,10 @@
  * needs feedback, approving a task merges it through the orchestrator).
  */
 
+import type { ApproveTaskOutcome } from '../../application/orchestrator.js';
 import type { LightContainer } from '../../container.js';
 import type { DecisionAction } from '../../domain/decision.js';
-import { InvalidArgumentsError } from '../../domain/errors.js';
+import { InvalidArgumentsError, WorkspaceError } from '../../domain/errors.js';
 import { isTerminal } from '../../domain/transitions.js';
 import { textDiff } from '../text-diff.js';
 
@@ -16,12 +17,14 @@ export type DashboardAction =
   | { type: 'plan_reject'; id: string; message: string }
   | { type: 'plan_cancel'; id: string }
   | { type: 'prd_seen'; name: string; version: number }
-  | { type: 'task_cancel'; id: string };
+  | { type: 'task_cancel'; id: string }
+  | { type: 'task_approve'; id: string }
+  | { type: 'task_reject'; id: string; message: string };
 
 /** What needs the orchestrator (full container), created on demand. */
 export interface OrchestratorOps {
   /** Integrate (sync, verify, merge) a task approved in review. */
-  approveTask(taskId: string): Promise<{ status: string; detail?: string }>;
+  approveTask(taskId: string): Promise<ApproveTaskOutcome>;
   /** Cancel a running task (stops its agent). */
   cancelRunning(taskId: string): Promise<void>;
   /** Remove the worktree and branch of a task a human cancelled. */
@@ -56,6 +59,12 @@ export function parseAction(body: unknown): DashboardAction {
     case 'plan_reject': return { type: 'plan_reject', id: str(b['id'], 'id')!, message: str(b['message'], 'feedback (message)')! };
     case 'plan_cancel': return { type: 'plan_cancel', id: str(b['id'], 'id')! };
     case 'task_cancel': return { type: 'task_cancel', id: str(b['id'], 'id')! };
+    case 'task_approve': return { type: 'task_approve', id: str(b['id'], 'id')! };
+    case 'task_reject': {
+      const message = str(b['message'], 'reason (message)')!.trim();
+      if (!message) throw new InvalidArgumentsError('reason (message) is required');
+      return { type: 'task_reject', id: str(b['id'], 'id')!, message };
+    }
     case 'prd_seen': {
       const version = Number(b['version']);
       if (!Number.isInteger(version) || version < 1) throw new InvalidArgumentsError('version must be a positive integer');
@@ -90,8 +99,7 @@ export async function runAction(c: LightContainer, action: DashboardAction, ops:
         return `task ${taskId} 已取消${r.task.workspace ? '，worktree 與分支已刪除' : ''}`;
       }
       if (r.task.status === 'review' && r.task.approved) {
-        const out = await (await ops()).approveTask(taskId);
-        return `task ${taskId} 已核准 → ${out.status === 'queued' ? '執行中的 orchestrator 會合併它' : out.status}${out.detail ? `（${out.detail}）` : ''}`;
+        return describeApproval(taskId, await (await ops()).approveTask(taskId));
       }
       return `已回答；task ${taskId} → ${r.task.status}`;
     }
@@ -122,6 +130,39 @@ export async function runAction(c: LightContainer, action: DashboardAction, ops:
       }
       return `task ${task.id} 已取消`;
     }
+    case 'task_approve': {
+      const task = await c.taskService.get(action.id);
+      if (task.status !== 'review') throw new InvalidArgumentsError(`Task ${task.id} is ${task.status}, not in review`);
+      const out = await (await ops()).approveTask(task.id);
+      if (out.status === 'review') {
+        throw new WorkspaceError(`無法合併 ${task.id}：${out.detail}`, 'task 留在審查中，worktree 保留。修好後再核准，或退回給 agent。');
+      }
+      return describeApproval(task.id, out);
+    }
+    case 'task_reject': {
+      const task = await c.taskService.reject(action.id, action.message);
+      return `task ${task.id} 已退回 → 待辦，agent 會依你的說明重做`;
+    }
+  }
+}
+
+const SEND_BACK_REASON: Record<string, string> = {
+  conflict: '合併最新 main 時有衝突',
+  review: '合併最新 main 後驗證失敗',
+  contract: '它改了使用中的契約檔',
+};
+
+/** One line for the result of approving a task (same cases as `orch task approve`). */
+export function describeApproval(taskId: string, out: ApproveTaskOutcome): string {
+  switch (out.status) {
+    case 'done': return `task ${taskId} 已核准並合併，完成`;
+    case 'queued': return `task ${taskId} 已核准，執行中的 orchestrator 會同步、驗證並合併它`;
+    case 'sent_back':
+      return `task ${taskId} 已核准，但${SEND_BACK_REASON[out.reason] ?? out.reason}${out.files?.length ? `（${out.files.join(', ')}）` : ''}，已退回給 agent`;
+    case 'waiting_decision': return `task ${taskId} 已核准，但退回次數到上限，等你回答決策單 ${out.decisionId}`;
+    case 'deferred': return `task ${taskId} 已核准，還沒合併（${out.detail}），orchestrator 會再試`;
+    case 'review': return `task ${taskId} 無法合併：${out.detail}（留在審查中）`;
+    default: return `task ${taskId} 已核准 → ${out.status}`;
   }
 }
 

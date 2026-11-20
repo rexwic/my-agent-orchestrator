@@ -192,6 +192,29 @@ details summary { cursor: pointer; color: var(--dim); }
       '<div class="agents">' + agents + '</div></div>';
   }
 
+  function reviewPill(r) {
+    var rv = { pending: '審查中', passed: '審查通過', changes: '審查退回', escalated: '審查待你決定' }[r.status] || r.status;
+    return '<span class="pill ' + (r.status === 'passed' ? 'ok' : r.status === 'pending' ? '' : 'warn') + '">' + esc(rv) + ' · 第 ' + r.round + ' 輪' + (r.open ? ' · ' + r.open + ' 個 must-fix' : '') + '</span>';
+  }
+
+  /** Approve / send back a task in review (inbox card and task detail). */
+  function taskActions(id, note) {
+    return '<div data-task-box="' + esc(id) + '">' +
+      (note ? '<div class="small" style="color:var(--warn)">' + esc(note) + '</div>' : '') +
+      '<textarea placeholder="退回時必填：要 agent 改什麼"></textarea>' +
+      '<div class="row"><button class="primary" data-task-act="approve">核准並合併</button><button data-task-act="reject">退回重做</button></div></div>';
+  }
+
+  function approveCard(t) {
+    return '<div class="card"><div class="row small dim"><span class="tag">等你核准</span><span>' + esc([t.role, t.agent].filter(Boolean).join(' · ')) + '</span><span>' + esc(time(t.updated_at)) + '</span></div>' +
+      '<h3><a href="#" data-task="' + esc(t.id) + '">' + esc(t.title) + '</a></h3>' +
+      '<div class="row small">' +
+        (t.delivery ? '<span class="pill ' + (t.delivery.status === 'done' ? 'ok' : 'warn') + '">交付：' + esc(DELIVERY[t.delivery.status] || t.delivery.status) + '</span>' : '') +
+        (t.review ? reviewPill(t.review) : '') +
+        '<a href="#" data-task="' + esc(t.id) + '">看交付報告與變更</a></div>' +
+      taskActions(t.id) + '</div>';
+  }
+
   function taskTable(tasks) {
     var groups = {};
     tasks.forEach(function (t) { var k = t.role || '（未指定角色）'; (groups[k] = groups[k] || []).push(t); });
@@ -204,10 +227,7 @@ details summary { cursor: pointer; color: var(--dim); }
         if (t.waiting_for.length) extra.push('<span class="small dim">等待：' + esc(t.waiting_for.join('、')) + '</span>');
         if (t.send_backs) extra.push('<span class="small" style="color:var(--warn)">退回 ' + t.send_backs + ' 次</span>');
         if (t.uses) extra.push('<span class="small dim">契約：' + esc(t.uses.join(', ')) + '</span>');
-        if (t.review) {
-          var rv = { pending: '審查中', passed: '審查通過', changes: '審查退回', escalated: '審查待你決定' }[t.review.status] || t.review.status;
-          extra.push('<span class="pill ' + (t.review.status === 'passed' ? 'ok' : t.review.status === 'pending' ? '' : 'warn') + '">' + esc(rv) + ' · 第 ' + t.review.round + ' 輪' + (t.review.open ? ' · ' + t.review.open + ' 個 must-fix' : '') + '</span>');
-        }
+        if (t.review) extra.push(reviewPill(t.review));
         return '<tr class="click" data-task="' + esc(t.id) + '"><td>' + statusBadge(t.status) + '</td><td>' + esc(t.title) + ' ' + extra.join(' ') +
           '</td><td class="small">' + esc(t.agent || '') + '</td><td class="small">' +
           (t.delivery ? '<span class="pill ' + (t.delivery.status === 'done' ? 'ok' : 'warn') + '">' + esc(DELIVERY[t.delivery.status] || t.delivery.status) + '</span>' : '') +
@@ -226,13 +246,14 @@ details summary { cursor: pointer; color: var(--dim); }
     var mine = s.decisions.mine.filter(function (d) { return d.source !== 'plan'; });
     var plans = s.plans.filter(function (p) { return p.status === 'awaiting_approval'; });
     var prds = s.prds.filter(function (p) { return p.unseen.length; });
-    var inbox = mine.length + plans.length + prds.length;
+    var toApprove = (s.to_approve || []).map(function (id) { return s.tasks.find(function (t) { return t.id === id; }); }).filter(Boolean);
+    var inbox = mine.length + plans.length + prds.length + toApprove.length;
     var visible = s.tasks.filter(function (t) { return showFinished || (t.status !== 'done' && t.status !== 'cancelled'); });
     var others = s.plans.filter(function (p) { return p.status !== 'awaiting_approval'; });
 
     var html = '';
     html += '<section><h2>需要你處理 <span class="count' + (inbox ? ' hot' : '') + '">' + inbox + '</span></h2>' +
-      (inbox ? '<div class="cards">' + plans.map(planCard).join('') + mine.map(function (d) { return decisionCard(d, false); }).join('') + prds.map(prdCard).join('') + '</div>' : '<div class="empty">目前沒有要你處理的事</div>') + '</section>';
+      (inbox ? '<div class="cards">' + plans.map(planCard).join('') + mine.map(function (d) { return decisionCard(d, false); }).join('') + toApprove.map(approveCard).join('') + prds.map(prdCard).join('') + '</div>' : '<div class="empty">目前沒有要你處理的事</div>') + '</section>';
     if (s.decisions.with_roles.length) {
       html += '<section><h2>PM 處理中 <span class="count">' + s.decisions.with_roles.length + '</span> <span class="dim small">PM 會回答或轉給你；你也可以直接回答</span></h2><div class="cards">' +
         s.decisions.with_roles.map(function (d) { return decisionCard(d, true); }).join('') + '</div></section>';
@@ -266,6 +287,14 @@ details summary { cursor: pointer; color: var(--dim); }
   function openModal(html) { $('modal-box').innerHTML = html + '<div class="row"><button data-close>關閉</button></div>'; $('modal').classList.add('open'); }
   function closeModal() { $('modal').classList.remove('open'); }
 
+  /** Task detail: approve / send back a work task in review. Paperwork (plans, PRDs, reviews...) finishes by itself. */
+  function reviewBlock(t) {
+    if (t.status !== 'review') return '';
+    if (t.plan_id || t.prd_draft || t.triage_decision_id || t.review_of || (t.verify_bugs && t.verify_bugs.length)) return '';
+    if (t.approved) return '<div class="small dim">已核准，等待同步與合併</div>';
+    return taskActions(t.id, t.review && t.review.status === 'pending' ? 'reviewer 還在審，現在核准會略過審查' : '');
+  }
+
   function showTask(id) {
     api('/api/task?id=' + encodeURIComponent(id)).then(function (r) {
       var t = r.task, d = r.delivery;
@@ -277,6 +306,7 @@ details summary { cursor: pointer; color: var(--dim); }
         (r.decisions.length ? '<details open><summary>決策</summary><pre>' + esc(r.decisions.map(function (x) { return (x.status === 'pending' ? '[等回答] ' : '[已回答] ') + x.question + (x.answer ? '\\n  → ' + [x.answer.choice, x.answer.message].filter(Boolean).join(' — ') : ''); }).join('\\n')) + '</pre></details>' : '') +
         (t.proof && t.proof.files_changed && t.proof.files_changed.length ? '<details><summary>變更的檔案</summary><pre>' + esc(t.proof.files_changed.join('\\n')) + '</pre></details>' : '') +
         (t.proof && t.proof.agent_summary ? '<details><summary>agent 摘要</summary><pre>' + esc(t.proof.agent_summary) + '</pre></details>' : '') +
+        reviewBlock(t) +
         (['done', 'failed', 'cancelled'].indexOf(t.status) === -1 ? '<div class="row"><button class="danger" data-cancel-task="' + esc(t.id) + '">取消這個 task</button><span class="small dim">取消後會刪掉它的 worktree 與分支</span></div>' : '');
       openModal(html);
     }).catch(function (e) { toast(e.message, true); });
@@ -306,7 +336,7 @@ details summary { cursor: pointer; color: var(--dim); }
 
   // ── events ───────────────────────────────────────────────────
   document.addEventListener('click', function (ev) {
-    var el = ev.target.closest ? ev.target.closest('[data-task],[data-answer],[data-plan-act],[data-prd],[data-prd-diff],[data-prd-seen],[data-cancel-task],[data-close]') : null;
+    var el = ev.target.closest ? ev.target.closest('[data-task],[data-answer],[data-plan-act],[data-prd],[data-prd-diff],[data-prd-seen],[data-cancel-task],[data-task-act],[data-close]') : null;
     if (!el) { if (ev.target === $('modal')) closeModal(); return; }
     if (el.hasAttribute('data-close')) { closeModal(); return; }
     if (el.hasAttribute('data-answer')) {
@@ -326,6 +356,12 @@ details summary { cursor: pointer; color: var(--dim); }
       if (a === 'approve') act({ type: 'plan_approve', id: id, message: fb || undefined }, el, '核准計畫並建立它的 task？');
       else if (a === 'reject') { if (!fb) { toast('退回要寫明要改什麼', true); return; } act({ type: 'plan_reject', id: id, message: fb }, el); }
       else act({ type: 'plan_cancel', id: id }, el, '取消這個計畫？');
+      return;
+    }
+    if (el.hasAttribute('data-task-act')) {
+      var tb = el.closest('[data-task-box]'); var tid = tb.getAttribute('data-task-box'); var why = tb.querySelector('textarea').value.trim();
+      if (el.getAttribute('data-task-act') === 'approve') act({ type: 'task_approve', id: tid }, el, '核准並合併這個 task？（會先合併最新 main 再驗證）');
+      else { if (!why) { toast('退回要寫明要改什麼', true); return; } act({ type: 'task_reject', id: tid, message: why }, el); }
       return;
     }
     if (el.hasAttribute('data-cancel-task')) { act({ type: 'task_cancel', id: el.getAttribute('data-cancel-task') }, el, '取消這個 task？（會刪掉它的 worktree 與分支）'); return; }

@@ -6,9 +6,10 @@ import path from 'node:path';
 import { buildLightContainer, type LightContainer } from '../../../src/container.js';
 import { validateRole } from '../../../src/domain/role.js';
 import { buildDashboardState } from '../../../src/cli/dashboard/state.js';
-import { parseAction } from '../../../src/cli/dashboard/actions.js';
+import { parseAction, describeApproval } from '../../../src/cli/dashboard/actions.js';
 import { startDashboardServer } from '../../../src/cli/dashboard/server.js';
 import { dashboardPage } from '../../../src/cli/dashboard/page.js';
+import type { ApproveTaskOutcome } from '../../../src/application/orchestrator.js';
 
 let root: string;
 let c: LightContainer;
@@ -45,6 +46,28 @@ describe('dashboard state', () => {
     expect(s.tasks.some((t) => t.kind === 'pm-answer')).toBe(true);
     expect(s.orchestrator).toEqual({ running: false, in_process: false, running_tasks: 1 });
   });
+
+  it('lists tasks in review that wait for a human to approve them', async () => {
+    const inReview = async (title: string, extra: Record<string, unknown> = {}) => {
+      const t = await c.taskService.create({ title, role: 'backend' });
+      await c.taskStore.save({ ...(await c.taskStore.get(t.id))!, status: 'review', ...extra });
+      return t.id;
+    };
+    const now = new Date().toISOString();
+    const waiting = await inReview('Manual policy');
+    const reviewed = await inReview('Reviewer passed, manual policy', { review: { round: 1, status: 'passed', findings: [], updated_at: now } });
+    await inReview('Approved, merging', { approved: true });
+    await inReview('Reviewer at work', { review: { round: 1, status: 'pending', findings: [], updated_at: now } });
+    await inReview('Planning', { plan_id: 'pln_1' });
+    const asked = await inReview('Has a decision');
+    await c.decisionService.request({ task_id: asked, source: 'escalation', question: 'Merge it?' });
+    await c.taskService.create({ title: 'Still todo' });
+
+    const s = await buildDashboardState(c, { orchestrator: notRunning });
+
+    expect(s.to_approve.sort()).toEqual([waiting, reviewed].sort());
+    expect(s.tasks.find((t) => t.title === 'Approved, merging')!.approved).toBe(true);
+  });
 });
 
 describe('dashboard actions', () => {
@@ -53,13 +76,26 @@ describe('dashboard actions', () => {
     expect(() => parseAction({ type: 'plan_reject', id: 'pln_1' })).toThrow(/feedback \(message\) is required/);
     expect(() => parseAction({ type: 'decision_answer', id: 'd', action: 'merge' })).toThrow(/continue, approve or cancel/);
     expect(() => parseAction({ type: 'rm -rf' })).toThrow(/Unknown action/);
+    expect(parseAction({ type: 'task_approve', id: 'tsk_1' })).toEqual({ type: 'task_approve', id: 'tsk_1' });
+    expect(parseAction({ type: 'task_reject', id: 'tsk_1', message: ' add a test ' })).toEqual({ type: 'task_reject', id: 'tsk_1', message: 'add a test' });
+    expect(() => parseAction({ type: 'task_reject', id: 'tsk_1' })).toThrow(/reason \(message\) is required/);
+    expect(() => parseAction({ type: 'task_reject', id: 'tsk_1', message: '   ' })).toThrow(/reason \(message\) is required/);
+    expect(() => parseAction({ type: 'task_approve' })).toThrow(/id is required/);
+  });
+
+  it('describes every approval outcome', () => {
+    expect(describeApproval('t', { status: 'done' })).toMatch(/合併，完成/);
+    expect(describeApproval('t', { status: 'queued' })).toMatch(/orchestrator 會同步/);
+    expect(describeApproval('t', { status: 'sent_back', reason: 'conflict', files: ['a.java'] })).toMatch(/衝突（a\.java），已退回/);
+    expect(describeApproval('t', { status: 'waiting_decision', decisionId: 'dec_9', detail: 'x' })).toMatch(/dec_9/);
+    expect(describeApproval('t', { status: 'deferred', detail: 'main moved' })).toMatch(/main moved/);
   });
 });
 
 describe('dashboard server', () => {
   let server: http.Server;
   let port: number;
-  const ops = { approveTask: vi.fn(async () => ({ status: 'done' })), cancelRunning: vi.fn(async () => {}), discardCancelledWork: vi.fn(async () => {}) };
+  const ops = { approveTask: vi.fn(async (_id: string): Promise<ApproveTaskOutcome> => ({ status: 'done' })), cancelRunning: vi.fn(async () => {}), discardCancelledWork: vi.fn(async () => {}) };
 
   beforeEach(async () => {
     const started = await startDashboardServer({ container: c, token: 'tok', orchestrator: notRunning, ops: async () => ops }, 0);
@@ -121,6 +157,33 @@ describe('dashboard server', () => {
     expect(r.status).toBe(200);
     expect(ops.discardCancelledWork).toHaveBeenCalledWith(t.id);
     expect((await c.taskStore.get(t.id))!.status).toBe('cancelled');
+  });
+
+  it('approves a task in review through the orchestrator; a failed merge is an error with a hint', async () => {
+    const t = await c.taskService.create({ title: 'Review me' });
+    await c.taskStore.save({ ...(await c.taskStore.get(t.id))!, status: 'review', workspace: '/w' });
+    const ok = await call('/api/action', { method: 'POST', body: { type: 'task_approve', id: t.id } });
+    expect(ok.status).toBe(200);
+    expect(ops.approveTask).toHaveBeenCalledWith(t.id);
+    expect(JSON.parse(ok.body).message).toMatch(/已核准並合併/);
+
+    ops.approveTask.mockResolvedValueOnce({ status: 'review', detail: 'git merge failed' });
+    const failed = await call('/api/action', { method: 'POST', body: { type: 'task_approve', id: t.id } });
+    expect(failed.status).toBe(400);
+    expect(JSON.parse(failed.body)).toMatchObject({ error: expect.stringMatching(/git merge failed/), hint: expect.stringMatching(/留在審查中/) });
+
+    const todo = await c.taskService.create({ title: 'Not in review' });
+    const wrong = await call('/api/action', { method: 'POST', body: { type: 'task_approve', id: todo.id } });
+    expect(wrong.status).toBe(400);
+    expect(JSON.parse(wrong.body).error).toMatch(/not in review/);
+  });
+
+  it('sends a task in review back to its agent with the reason', async () => {
+    const t = await c.taskService.create({ title: 'Redo' });
+    await c.taskStore.save({ ...(await c.taskStore.get(t.id))!, status: 'review' });
+    const r = await call('/api/action', { method: 'POST', body: { type: 'task_reject', id: t.id, message: 'handle an empty cart' } });
+    expect(r.status).toBe(200);
+    expect(await c.taskStore.get(t.id)).toMatchObject({ status: 'todo', feedback: 'handle an empty cart' });
   });
 
   it('task detail and PRD diff', async () => {

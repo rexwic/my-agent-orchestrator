@@ -51,6 +51,8 @@ export interface DashboardTask {
   delivery?: { status: string; by: string; at: string };
   /** Review by a reviewer role: round, status, must-fix findings still open. */
   review?: { round: number; status: string; open: number };
+  /** Approved by a human or the reviewer: being synced and merged. */
+  approved?: true;
   updated_at: string;
 }
 
@@ -101,6 +103,8 @@ export interface DashboardState {
   };
   plans: DashboardPlan[];
   prds: DashboardPrd[];
+  /** Tasks in review waiting for a human to approve or reject them (ids). */
+  to_approve: string[];
 }
 
 export interface StateOptions {
@@ -116,6 +120,19 @@ function openFindings(t: Task): number {
   if (!r || (r.status !== 'changes' && r.status !== 'escalated')) return 0;
   if (r.round > 1) return (r.checks ?? []).filter((c) => !c.fixed).length;
   return r.findings.filter((f) => f.severity === 'must-fix' && f.round === r.round).length;
+}
+
+/**
+ * In review and waiting for a human: not approved yet, no reviewer at work, no
+ * pending decision (that card is shown instead), and not paperwork (plans,
+ * PRD drafts, reviews... finish by themselves).
+ */
+function waitsForApproval(t: Task, decidingTasks: Set<string | undefined>): boolean {
+  if (t.status !== 'review' || t.approved) return false;
+  if (t.review?.status === 'pending') return false;
+  if (decidingTasks.has(t.id)) return false;
+  const kind = kindOf(t);
+  return kind === 'work' || kind === 'bug';
 }
 
 function kindOf(t: Task): TaskKind {
@@ -198,12 +215,14 @@ export async function buildDashboardState(c: LightContainer, opts: StateOptions)
       ...(t.uses?.length ? { uses: t.uses } : {}),
       ...(d ? { delivery: { status: d.status, by: d.submitted_by, at: d.submitted_at } } : {}),
       ...(t.review ? { review: { round: t.review.round, status: t.review.status, open: openFindings(t) } } : {}),
+      ...(t.approved ? { approved: true as const } : {}),
       updated_at: t.updated_at,
     };
   });
 
   const withTitle = (d: Decision): DashboardDecision => ({ ...d, ...(d.task_id && byId.get(d.task_id) ? { task_title: byId.get(d.task_id)!.title } : {}) });
   const pending = decisions.filter((d) => d.status === 'pending');
+  const decidingTasks = new Set(pending.map((d) => d.task_id).filter(Boolean));
   const recent = decisions
     .filter((d) => d.status === 'answered' && d.answer)
     .sort((a, b) => b.answer!.answered_at.localeCompare(a.answer!.answered_at))
@@ -245,6 +264,7 @@ export async function buildDashboardState(c: LightContainer, opts: StateOptions)
       recent: recent.map(withTitle),
     },
     plans: planRows,
+    to_approve: tasks.filter((t) => waitsForApproval(t, decidingTasks)).map((t) => t.id),
     prds: prds.map((p) => ({
       name: p.name,
       latest: p.latest.version,
