@@ -240,9 +240,10 @@ export class WorkspaceManager implements IWorkspaceManager {
     const branchName = `orchestry/${sanitizeId(task.id)}/${titleSlug}`;
 
     // Idempotent: if worktree directory already exists (retry after failure), reuse it
+    // with the branch it was made with (the title may have changed since).
     try {
       await fs.access(workspacePath);
-      return { path: workspacePath, branch: branchName };
+      return { path: workspacePath, branch: task.proof?.branch ?? branchName };
     } catch {
       // Directory doesn't exist — create fresh
     }

@@ -105,6 +105,11 @@ export interface OrchestratorDeps {
 /** Result of `approveTask`: `queued` means an orchestrator integrates it in the background. */
 export type ApproveTaskOutcome = IntegrationOutcome | { status: 'queued' };
 
+/** A run time limit for messages: "45s", "10 min". */
+function describeLimit(ms: number): string {
+  return ms < 60_000 ? `${Math.round(ms / 1000)}s` : `${Math.round(ms / 60_000)} min`;
+}
+
 /** Work left for after the state lock is released when a run succeeds. */
 type PendingCompletion =
   | { kind: 'integrate'; autoApprove: boolean }
@@ -761,17 +766,25 @@ export class Orchestrator {
       const lastEventAt = new Date(entry.last_event_at).getTime();
       const agentForStall = runningAgentData[i];
       const stallTimeout = agentForStall?.config.stall_timeout_ms ?? this.deps.config.defaults.agent.stall_timeout_ms;
+      // Total run time limit: an agent that keeps producing output is never "stalled".
+      const runTimeout = agentForStall?.config.timeout_ms ?? this.deps.config.defaults.agent.timeout_ms;
+      const stalled = now - lastEventAt > stallTimeout;
+      const timedOut = now - new Date(entry.started_at).getTime() > runTimeout;
 
-      if (now - lastEventAt > stallTimeout) {
-        this.deps.eventBus.emit({
-          type: 'orchestrator:stall_detected',
-          runId: entry.run_id,
-        });
+      if (stalled || timedOut) {
+        if (stalled) {
+          this.deps.eventBus.emit({
+            type: 'orchestrator:stall_detected',
+            runId: entry.run_id,
+          });
+        }
 
         this.abortControllers.get(taskId)?.abort();
         await this.deps.processManager.killWithGrace(entry.pid, 5_000);
         try {
-          await this._handleRunFailure(taskId, entry, 'Agent stalled (no events)');
+          await this._handleRunFailure(taskId, entry, stalled
+            ? 'Agent stalled (no events)'
+            : `Agent execution timed out (${describeLimit(runTimeout)} limit)`);
         } catch {
           delete state.running[taskId];
           await this.deps.agentService.setStatus(entry.agent_id, 'idle').catch((err) => {
@@ -828,21 +841,9 @@ export class Orchestrator {
       );
     }
 
-    // Process retry queue — filter builds new array instead of mutating with splice
-    const dueRetries: string[] = [];
-    state.retry_queue = state.retry_queue.filter((retry) => {
-      if (now >= new Date(retry.due_at).getTime()) {
-        dueRetries.push(retry.task_id);
-        return false;
-      }
-      return true;
-    });
-    for (const taskId of dueRetries) {
-      // Guard: task may have succeeded while waiting in retry queue
-      const retryTask = await this.deps.taskStore.get(taskId);
-      if (!retryTask || !isDispatchable(retryTask.status)) continue;
-      await this.dispatchTask(taskId, retryTask);
-    }
+    // Retry queue: a due retry leaves the queue and competes in the normal dispatch
+    // (capacity, scopes, dependencies); a retry not yet due keeps its task waiting.
+    state.retry_queue = state.retry_queue.filter((retry) => new Date(retry.due_at).getTime() > now);
 
     await this.saveState();
   }
@@ -933,10 +934,14 @@ export class Orchestrator {
     // Tasks pinned to a usage-limit-paused agent wait without taking a slot,
     // so work for other accounts/providers keeps flowing.
     const pausedAgentIds = await this.pausedAgentIds();
+    // A retrying task waits out its backoff (calculateRetryDelay) before it runs again.
+    const now = Date.now();
+    const backingOff = new Set(state.retry_queue.filter((r) => new Date(r.due_at).getTime() > now).map((r) => r.task_id));
     const candidates = allTasks
       .filter(
         (t) =>
           isDispatchable(t.status) &&
+          !backingOff.has(t.id) &&
           !isBlocked(t, taskMap) &&
           !state.running[t.id] &&
           !state.claimed.has(t.id) &&
@@ -1444,6 +1449,7 @@ export class Orchestrator {
         run.id,
         taskId,
         agent.id,
+        agentData.config,
       ).catch((err) => {
         this.deps.eventBus.emit({
           type: 'orchestrator:error',
@@ -1452,7 +1458,9 @@ export class Orchestrator {
           fatal: false,
         });
       }).finally(() => {
-        this.activeCollectors.delete(taskId);
+        // A stopped run that ends late must not unguard the newer run of the task.
+        const current = this.state?.running[taskId];
+        if (!current || current.run_id === run.id) this.activeCollectors.delete(taskId);
       });
     } catch (err) {
       // Rollback claim and clean up abort controller (process never launched)
@@ -1471,7 +1479,34 @@ export class Orchestrator {
     runId: string,
     taskId: string,
     agentId: string,
+    limits: Pick<import('../domain/agent.js').AgentConfig, 'timeout_ms' | 'stall_timeout_ms'> = {},
   ): Promise<void> {
+    // Time limits of a live run. (reconcile skips runs that have a collector, so the
+    // limits are enforced here: total run time, and time without any event.)
+    const defaults = this.deps.config.defaults.agent;
+    const timeoutMs = limits.timeout_ms ?? defaults.timeout_ms;
+    const stallMs = limits.stall_timeout_ms ?? defaults.stall_timeout_ms;
+    let expired: (Error & { errorKind: AdapterErrorKind }) | undefined;
+    let killing: Promise<void> | undefined;
+    let wake: () => void = () => {};
+    const stopped = new Promise<void>((resolve) => { wake = resolve; });
+    const expire = (stalled: boolean): void => {
+      const entry = this.state?.running[taskId];
+      if (expired || this.shuttingDown || entry?.run_id !== runId) return;
+      expired = Object.assign(
+        new Error(stalled ? 'Agent stalled (no events)' : `Agent execution timed out (${describeLimit(timeoutMs)} limit)`),
+        { errorKind: AdapterErrorKind.TIMEOUT },
+      );
+      if (stalled) this.deps.eventBus.emit({ type: 'orchestrator:stall_detected', runId });
+      this.abortControllers.get(taskId)?.abort();
+      if (entry.pid > 0) killing = this.deps.processManager.killWithGrace(entry.pid, 5_000).catch(() => {});
+      wake();
+    };
+    const deadline = setTimeout(() => expire(false), timeoutMs);
+    const idle = setTimeout(() => expire(true), stallMs);
+    deadline.unref?.();
+    idle.unref?.();
+
     let collectedTokens: import('../domain/run.js').TokenUsage | undefined;
     let resultText: string | undefined;
     let lastAgentMessage: string | undefined;
@@ -1481,9 +1516,10 @@ export class Orchestrator {
     let fatalError: { message: string; kind?: import('../domain/errors.js').AdapterErrorKind; resetAt?: string } | undefined;
     const filesChangedSet = new Set<string>();
 
-    try {
+    const consume = async (): Promise<void> => {
       for await (const event of generator) {
-        if (this.shuttingDown) break;
+        if (this.shuttingDown || expired) break;
+        idle.refresh();
 
         // Capture token usage and result text from done events
         if (event.type === 'done') {
@@ -1627,6 +1663,16 @@ export class Orchestrator {
           });
         }
       }
+    };
+
+    try {
+      const consuming = consume();
+      consuming.catch(() => {}); // after a time limit the stream is abandoned
+      await Promise.race([consuming, stopped]);
+      if (expired) {
+        await killing;
+        throw expired;
+      }
 
       // A fatal error event (e.g. Claude result with is_error) fails the run even on exit code 0
       if (fatalError && !this.shuttingDown) {
@@ -1643,22 +1689,25 @@ export class Orchestrator {
     } catch (err) {
       type AdapterFailure = Error & { errorKind?: import('../domain/errors.js').AdapterErrorKind; resetAt?: string };
       // The fatal event's message is more specific than "process exited with code 1"
-      const error = fatalError?.message ?? (err instanceof Error ? err.message : String(err));
-      // Prefer the fatal event, then the last error event, then the thrown error (from utils.ts)
-      const errorKind = fatalError?.kind ?? lastErrorKind
+      const error = expired?.message ?? fatalError?.message ?? (err instanceof Error ? err.message : String(err));
+      // Prefer a time limit, the fatal event, then the last error event, then the thrown error (from utils.ts)
+      const errorKind = expired?.errorKind ?? fatalError?.kind ?? lastErrorKind
         ?? (err instanceof Error ? (err as AdapterFailure).errorKind : undefined);
       const resetAt = fatalError?.resetAt ?? lastResetAt
         ?? (err instanceof Error ? (err as AdapterFailure).resetAt : undefined);
       const entry = this.state?.running[taskId];
-      if (entry) {
+      if (entry?.run_id === runId) {
         // runService.finish emits agent:completed
         await this.handleRunFailure(taskId, entry, error, errorKind, resetAt);
       } else {
-        // Running entry was already cleaned up (e.g. by reconcile) — finalize the run
+        // Running entry was already cleaned up (e.g. by reconcile), or belongs to a
+        // newer run of the same task (this one timed out / stalled) — finalize the run
         // directly so it doesn't stay stuck in status: running forever.
         await this.deps.runService.finish(runId, 'failed', undefined, error).catch(() => {});
       }
     } finally {
+      clearTimeout(deadline);
+      clearTimeout(idle);
       // Release the cached JSONL append handle FD for this run
       this.deps.runStore.closeRunEvents(runId);
     }
@@ -1710,11 +1759,12 @@ export class Orchestrator {
     filesChanged?: string[],
   ): Promise<PendingCompletion | undefined> {
     await this.flushStateLazy();
-    this.abortControllers.delete(taskId);
     const state = this.state!;
 
-    // If task was already cancelled/removed from running, skip
-    if (!state.running[taskId]) return;
+    // Skip if the task was cancelled/removed from running, or a newer run of it is
+    // in progress (this run was stopped for a stall or timeout and retried).
+    if (state.running[taskId]?.run_id !== runId) return;
+    this.abortControllers.delete(taskId);
 
     const task = await this.deps.taskStore.get(taskId);
     if (!task) return;
@@ -1928,9 +1978,9 @@ export class Orchestrator {
     resetAt?: string,
   ): Promise<void> {
     await this.flushStateLazy();
-    this.abortControllers.delete(taskId);
     const state = this.state!;
-    if (!state.running[taskId]) return;
+    if (state.running[taskId]?.run_id !== entry.run_id) return;
+    this.abortControllers.delete(taskId);
 
     const task = await this.deps.taskStore.get(taskId);
     if (!task) return;
@@ -1977,11 +2027,12 @@ export class Orchestrator {
     errorKind?: import('../domain/errors.js').AdapterErrorKind,
   ): Promise<void> {
     await this.flushStateLazy();
-    this.abortControllers.delete(taskId);
     const state = this.state!;
 
-    // Guard: if running entry was already cleaned up (e.g. by handleRunSuccess), skip
-    if (!state.running[taskId]) return;
+    // Guard: skip if the running entry was already cleaned up (e.g. by handleRunSuccess)
+    // or belongs to a newer run of the task
+    if (state.running[taskId]?.run_id !== entry.run_id) return;
+    this.abortControllers.delete(taskId);
 
     const task = await this.deps.taskStore.get(taskId);
     if (!task) return;
@@ -2060,17 +2111,9 @@ export class Orchestrator {
     // Track runtime (reuse runtimeMs computed above)
     state.stats.total_runtime_ms += runtimeMs;
 
-    // Clean up worktree and branch if one was created for this task
-    if (task.proof?.branch) {
-      await this.deps.workspaceManager.cleanup(taskId, task.proof.branch).catch((err) => {
-        this.deps.eventBus.emit({
-          type: 'orchestrator:error',
-          error: err instanceof Error ? err.message : String(err),
-          context: `workspace cleanup for ${taskId}`,
-          fatal: false,
-        });
-      });
-    }
+    // Keep the worktree and branch: a retry continues from the work done so far, and a
+    // failed task can be inspected or retried (orch task retry). Only a human cancel
+    // discards them (discardCancelledWork).
 
     // Clean up running entry
     delete state.running[taskId];
